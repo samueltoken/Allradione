@@ -9,3 +9,49 @@ body.widget-body{min-width:0;min-height:0;background:transparent!important;overf
 @media(max-height:800px) and (min-width:901px){.explore{min-height:430px;height:calc(100vh - 305px)}.explore-copy{padding-top:25px}.explore h1{font-size:clamp(65px,6.4vw,95px);margin:24px 0 0}.hero-bottom{margin-top:23px}.country-picker{margin-top:20px;padding:10px 14px}.destinations{margin-top:12px;padding-top:15px}.country-strip{padding-bottom:17px}.radio-page{padding-top:21px}.radio-page-heading{margin-bottom:20px}.country-title h1{font-size:39px}.back-link{margin-bottom:12px}.radio-layout{gap:30px}.receiver{padding-top:15px;padding-bottom:20px}.dial{max-width:285px;width:70%;margin:11px auto 0}.dial-number{font-size:45px}.dial-mode{font-size:6px}.dial-foot{font-size:6px}.dial-center-dot{width:6px;height:6px;margin-top:6px}.station-identity h2{font-size:21px;margin-top:9px}.receiver-wave{height:38px;margin-top:8px}.receiver-wave .waveform{height:38px}.receiver-wave .waveform i{max-height:33px}.channel-strip{padding-top:12px}.station-panel{max-height:calc(100vh - 287px);min-height:405px}.station-row{min-height:57px}.station-select{padding-top:10px;padding-bottom:10px}.station-row-sub{margin-top:6px}.playerbar{height:82px}.workspace{padding-bottom:82px}.rail-main{margin-top:64px}}
 
 .wordmark-dot{display:inline-block!important;width:5px;height:5px;border-radius:50%;background:var(--red);top:5px!important;vertical-align:top!important}
+
+/* Keep window chrome and playback controls stationary; only content panes scroll. */
+html{height:100%;color-scheme:dark;scrollbar-color:#434837 #14170f;scrollbar-width:thin}
+body:not(.widget-body){height:100vh;min-height:0;overflow:hidden}
+body:not(.widget-body) #app{height:100%}
+.desktop-shell{height:100vh;min-height:0;overflow:hidden}
+.workspace{height:100vh;display:flex;flex-direction:column;padding-bottom:0;min-width:0}
+.topbar{flex-shrink:0}
+#main-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-color:#434837 #14170f;scrollbar-width:thin}
+.playerbar{position:relative;left:auto;right:auto;bottom:auto;width:100%;flex-shrink:0}
+#main-content:has(.explore){display:flex;flex-direction:column;overflow:hidden}
+.explore{flex:1;min-height:0!important;height:auto!important;max-height:none}
+.destinations{flex-shrink:0;margin-top:12px}
+.explore h1{font-size:clamp(60px,min(6.9vw,10.6vh),117px)}
+.radio-page-heading>div{min-width:0;flex:1}
+.radio-page-heading{gap:18px}
+.country-title{min-width:0}
+.country-title h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.country-stamp{flex-shrink:0}
+.strip-error{gap:20px;line-height:1.7}
+.strip-error>.text-button{flex-shrink:0}
+*::-webkit-scrollbar{width:7px;height:7px}
+*::-webkit-scrollbar-track{background:#14170f}
+*::-webkit-scrollbar-thumb{background:#434837;border:1px solid #14170f;border-radius:8px}
+*::-webkit-scrollbar-thumb:hover{background:#62714d}
+@media(max-height:800px){
+ .explore-copy{padding-top:22px}
+ .explore h1{font-size:clamp(54px,min(6.7vw,10.4vh),84px);margin-top:21px;margin-bottom:0}
+ .hero-bottom{margin-top:18px}
+ .country-picker{margin-top:18px}
+ .destinations{padding-top:13px;margin-top:7px}
+ .country-strip{padding-bottom:17px}
+ .globe-stage{top:5px;bottom:0}
+ .globe-bottom-note{bottom:10px}
+}
+@media(max-height:740px){
+ .hero-bottom{display:none}
+ .explore h1{font-size:clamp(50px,min(6.5vw,10.8vh),76px)}
+ .explore-copy .eyebrow{font-size:8px}
+ .country-picker{margin-top:22px}
+ .destinations{padding-top:11px}
+ .section-kicker{margin-bottom:12px}
+ .destination{gap:7px}
+ .country-strip{padding-bottom:14px}
+ .globe-top-note{top:14px}
+}

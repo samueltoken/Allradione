@@ -168,7 +168,7 @@ export class RadioPlayer {
       }
     } catch (error) {
       if (!this.current(generation, attempt)) return;
-      this.fail(generation, attempt, error instanceof Error ? error.message : '방송에 연결하지 못했어.');
+      this.fail(generation, attempt, '방송에 연결하지 못했어. 잠시 후 다시 시도해줘.');
     }
   }
 
