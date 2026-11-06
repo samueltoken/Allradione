@@ -92,13 +92,15 @@ async function findWidget(kind) {
 }
 
 async function readPlayerState(page) {
-  return page.evaluate(() => new Promise(resolve => {
-    const off = window.allradione.onPlayer(state => { off(); resolve(state); });
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    let off = () => {};
+    const timeout = setTimeout(() => { off(); reject(new Error('Player state did not arrive within 5 seconds.')); }, 5000);
+    off = window.allradione.onPlayer(state => { clearTimeout(timeout); off(); resolve(state); });
   }));
 }
 
 async function captureCountryAndPlayback(main) {
-  const probe = { check: 'optional live directory and playback', attempted: false, country: null, playback: 'not attempted' };
+  const probe = { check: 'optional live directory and playback', attempted: false, country: null, playback: 'not attempted', attempts: [] };
   try {
     // Keep the native test useful offline. Only the actual available API response populates this list.
     await main.locator('.destination[data-country]').first().waitFor({ timeout: 45000 });
@@ -113,26 +115,51 @@ async function captureCountryAndPlayback(main) {
     await main.locator('.radio-page').waitFor({ timeout: TIMEOUT });
     await expect.poll(async () => await main.locator('.station-skeleton').count(), { timeout: 45000 }).toBe(0);
     await main.screenshot({ path: path.join(OUTPUT, 'country.png') });
-    const station = main.locator('[data-station]').first();
-    if (await station.count()) {
+    const stationCount = await main.locator('[data-station]').count();
+    if (stationCount) {
       await main.locator('#volume').evaluate(input => {
         input.value = '3'; input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
       });
       probe.attempted = true;
-      await station.click();
-      try {
-        await expect.poll(async () => (await readPlayerState(main)).status, { timeout: 30000 }).toMatch(/^(playing|error)$/);
-      } catch { /* A slow or unreachable broadcaster is reported, not a native-window failure. */ }
-      const state = await readPlayerState(main);
-      probe.playback = state.status;
-      probe.station = state.station?.name || null;
-      probe.playingEventObserved = state.status === 'playing';
-      if (state.error) probe.message = safeDiagnostic(state.error);
-      await main.screenshot({ path: path.join(OUTPUT, 'country.png') });
-      if (state.status === 'playing' || state.status === 'connecting') {
-        await main.locator('[data-action="toggle"]').click();
-        await expect.poll(async () => (await readPlayerState(main)).status, { timeout: TIMEOUT }).toBe('paused');
+      for (let index = 0; index < Math.min(stationCount, 3); index++) {
+        const station = main.locator('[data-station]').nth(index);
+        const stationId = await station.getAttribute('data-station');
+        const attempt = { station: await station.locator('.station-row-name').innerText(), status: 'connecting', playingEventObserved: false, spectrumMax: 0 };
+        const started = Date.now();
+        const deadline = started + 25000;
+        let state;
+        await station.click({ timeout: 5000 });
+        const sample = async () => {
+          const snapshot = await readPlayerState(main);
+          if (snapshot.station?.stationuuid !== stationId) return 'waiting';
+          state = snapshot;
+          attempt.status = snapshot.status;
+          attempt.playingEventObserved ||= snapshot.status === 'playing';
+          attempt.spectrumMax = Math.max(attempt.spectrumMax, ...((snapshot.spectrum || []).filter(Number.isFinite)), 0);
+          return snapshot.status;
+        };
+        try {
+          await expect.poll(sample, { timeout: Math.max(1, deadline - Date.now()), intervals: [250, 500, 1000] }).toMatch(/^(playing|error)$/);
+          if (attempt.playingEventObserved && Date.now() < deadline) {
+            // Real analyser samples distinguish decoded audio from a metadata-only test state.
+            await expect.poll(async () => { await sample(); return attempt.spectrumMax; }, { timeout: Math.min(5000, deadline - Date.now()), intervals: [100, 250, 500] }).toBeGreaterThan(0);
+          }
+        } catch { /* A silent or unreachable broadcaster remains an observed optional result. */ }
+        attempt.spectrumMax = Number(attempt.spectrumMax.toFixed(5));
+        attempt.elapsedMs = Date.now() - started;
+        if (state?.error) attempt.message = safeDiagnostic(state.error);
+        probe.attempts.push(attempt);
+        probe.playback = attempt.status;
+        probe.station = attempt.station;
+        probe.playingEventObserved = attempt.playingEventObserved;
+        probe.spectrumMax = attempt.spectrumMax;
+        await main.screenshot({ path: path.join(OUTPUT, 'country.png') });
+        if (state?.status === 'playing' || state?.status === 'connecting') {
+          await main.locator('[data-action="toggle"]').click({ timeout: 5000 });
+          await expect.poll(async () => (await readPlayerState(main)).status, { timeout: 5000 }).toBe('paused');
+        }
+        if (attempt.playingEventObserved) break;
       }
     } else probe.playback = 'no playable station in the directory response';
   } catch (error) {
@@ -163,7 +190,13 @@ async function assertWidgetState(widget) {
 }
 
 async function run() {
-  await fs.access(path.join(ROOT, 'dist', 'index.html'));
+  const executablePath = process.env.ALLRADIONE_SMOKE_EXECUTABLE
+    ? path.resolve(ROOT, process.env.ALLRADIONE_SMOKE_EXECUTABLE)
+    : undefined;
+  if (executablePath) {
+    assert.equal((await fs.stat(executablePath)).isFile(), true, 'Packaged smoke executable must be a file');
+    assert.notEqual(process.env.ALLRADIONE_SMOKE_SKIP_SINGLE_INSTANCE, '1', 'Packaged smoke must exercise unmodified startup');
+  } else await fs.access(path.join(ROOT, 'dist', 'index.html'));
   await fs.mkdir(OUTPUT, { recursive: true });
   temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-smoke-'));
   let entry = ROOT;
@@ -174,7 +207,7 @@ async function run() {
     await fs.writeFile(entry, `const {app,nativeImage}=require('electron'); app.requestSingleInstanceLock=()=>true; if(process.platform==='linux'&&!process.env.DISPLAY&&!process.env.WAYLAND_DISPLAY)nativeImage.createFromPath=()=>nativeImage.createEmpty(); require(${JSON.stringify(path.join(ROOT, 'electron', 'main.cjs'))});`);
     results.push({ check: 'environment limitation', note: 'Single-instance lock and headless Linux tray skipped in isolated local harness; production and Windows CI remain unmodified.' });
   }
-  const args = [entry, `--user-data-dir=${path.join(temporary, 'chromium')}`];
+  const args = [...(executablePath ? [] : [entry]), `--user-data-dir=${path.join(temporary, 'chromium')}`];
   if (process.platform === 'linux') {
     args.unshift('--no-sandbox', '--disable-dev-shm-usage');
     if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) args.unshift('--headless', '--ozone-platform=headless', '--disable-gpu', '--mute-audio');
@@ -183,7 +216,8 @@ async function run() {
   // Exercise the built release renderer and isolate preferences from a real user's copy.
   delete environment.ALLRADIONE_DEV_URL;
   delete environment.ELECTRON_RUN_AS_NODE;
-  application = await _electron.launch({ args, cwd: ROOT, env: environment, timeout: TIMEOUT });
+  application = await _electron.launch({ ...(executablePath ? { executablePath } : {}), args, cwd: ROOT, env: environment, timeout: TIMEOUT });
+  results.push({ check: 'launch target', packagedExecutable: Boolean(executablePath) });
   application.on('window', observe);
   application.process().stderr?.on('data', chunk => {
     for (const line of chunk.toString().split('\n').filter(Boolean)) {

@@ -20,15 +20,19 @@ jobs:
       - run: npm run build
       - run: npm run test:audio
       - run: npm run test:native
+      - run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Verify packaged Windows app
+        run: npm run test:native
+        env:
+          ALLRADIONE_SMOKE_EXECUTABLE: release/win-unpacked/Allradione.exe
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Allradione-UI-verification
           path: artifacts/
           retention-days: 14
-      - run: npm run dist:win
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
       - name: Write SHA256 checksums
         shell: pwsh
         run: |
