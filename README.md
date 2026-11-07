@@ -25,6 +25,8 @@ Version 0.2.0 switches from the previous portable distribution to a Windows inst
 
 From 0.2.2, installing refreshes the release metadata so an earlier check cannot retain a missing or withdrawn installer. Releases become public only after the Windows checks pass and both the installer and checksum finish uploading. If a newer release is still preparing its installer, Settings offers a recheck instead of opening a download page.
 
+If an older app closes without installing the update, run the 0.2.2 Setup once over the existing installation. Publishing a new installer cannot repair an old updater that stops before running it. The 0.2.2 updater waits for its helper's verified readiness before closing and verifies restart using canonical Windows file paths.
+
 **Settings → Cache** shows cache usage and clears this app's network, compiled-code and station-directory caches. Favorites, preferences and unrelated files are retained. The result reports any cache that could not be removed; live playback remains available.
 
 Use Windows **Installed apps → Allradione → Uninstall** to remove the installed application, its desktop launcher, Start menu shortcut and application-owned settings/cache data. Upgrade installation preserves that data. Data folders beside an old portable executable and downloaded installer files are not part of the installed application's files.
