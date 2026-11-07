@@ -144,8 +144,17 @@ async function stopOwnedRestart(executable) {
   await poll(async () => (await ownedProcesses(await windowsSnapshot(), executable)).length === 0, 'restarted installed app closes before Playwright relaunch', 30000);
 }
 
+function extractInstalledFile(installDirectory, file) {
+  const archive = path.join(installDirectory, 'resources', 'app.asar');
+  const asar = require('@electron/asar');
+  // This lifecycle test replaces the archive repeatedly at the same path.
+  // ASAR caches its header/offset table by path, so refresh before each read.
+  asar.uncache(archive);
+  return asar.extractFile(archive, file);
+}
+
 async function readReleasedUpdater(installDirectory) {
-  const source = require('@electron/asar').extractFile(path.join(installDirectory, 'resources', 'app.asar'), 'electron/updater.cjs').toString('utf8');
+  const source = extractInstalledFile(installDirectory, 'electron/updater.cjs').toString('utf8');
   const allowed = new Set(['node:fs/promises', 'node:path', 'node:crypto', 'node:child_process']);
   const module = { exports: {} };
   const context = vm.createContext({ module, exports: module.exports, require: name => { assert.ok(allowed.has(name), `Unexpected released updater dependency: ${name}`); return require(name); } });
@@ -407,7 +416,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
       }
       return restarted.length > 0 && Boolean(upgraded) && !(await exists(stage));
     }, 'actual installed updater installs, restarts at its original location and cleans its stage', legacyDiagnostic ? 30000 : 180000);
-    const installedPackage = JSON.parse(require('@electron/asar').extractFile(path.join(path.dirname(executable), 'resources', 'app.asar'), 'package.json').toString('utf8'));
+    const installedPackage = JSON.parse(extractInstalledFile(path.dirname(executable), 'package.json').toString('utf8'));
     assert.equal(installedPackage.version, toVersion, 'Restarted executable must have the new packaged application');
     const afterSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
     for (const key of ['volume', 'favorites', 'recent', 'widgetEnabled', 'widgetSize', 'reducedMotion', 'lastCountry']) assert.deepEqual(afterSettings[key], beforeSettings[key], `Actual app update must preserve ${key}`);
@@ -713,5 +722,5 @@ async function main() {
   console.log(`Installer release gates passed: fresh install, current-app automatic update, settings preservation, native UI and uninstall.${legacyRecoveryUsed ? ' Legacy v0.2.0 automatic update FAILED; one-time manual Setup migration passed.' : ' Legacy automatic upgrade also passed.'}`);
 }
 
-module.exports = { nsisArguments, sameWindowsPath, assertFreshSnapshot, runProcess };
+module.exports = { nsisArguments, sameWindowsPath, assertFreshSnapshot, runProcess, extractInstalledFile };
 if (require.main === module) main().catch(error => { console.error('Installer lifecycle smoke failed:', error.message); process.exitCode = 1; });
