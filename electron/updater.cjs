@@ -105,6 +105,20 @@ async function readLimited(response, limit) {
 
 function psLiteral(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 
+function makeHelperLaunch({ systemRoot, scriptPath, scriptHash }) {
+  if (!path.win32.isAbsolute(systemRoot) || /["%!\r\n&|<>^]/.test(systemRoot) || !normalizeDigest(scriptHash)) throw new Error('업데이트 도우미 실행 경로를 확인하지 못했어.');
+  const executable = path.win32.join(systemRoot, 'System32', 'cmd.exe');
+  const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // cmd.exe supplies the console PowerShell needs while remaining independent of
+  // Electron's lifetime. Keep cmd's command below its 8191-character limit: only
+  // this short, hash-checked bootstrap is encoded, never the full update script.
+  const bootstrap = `$ErrorActionPreference='Stop';$bytes=[System.IO.File]::ReadAllBytes(${psLiteral(scriptPath)});$sha=[System.Security.Cryptography.SHA256]::Create();try{$digest=([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()};if($digest -ne '${scriptHash}'){throw 'Updater script SHA256 mismatch'};& ([scriptblock]::Create([System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)))`;
+  const encoded = Buffer.from(bootstrap, 'utf16le').toString('base64');
+  const command = `""${powershell}" -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}"`;
+  if (command.length > 8000) throw new Error('업데이트 도우미 경로가 너무 길어.');
+  return { executable, args: ['/d', '/s', '/c', command] };
+}
+
 function waitForHelperReady(child, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!child.stdout || !child.stderr) { reject(new Error('업데이트 도우미 응답 통로를 열지 못했어.')); return; }
@@ -142,8 +156,22 @@ function waitForHelperReady(child, { timeoutMs = 30000 } = {}) {
   });
 }
 
-async function stopHelper(child) {
+async function stopHelper(child, { env = process.env, platform = process.platform, spawnImpl = spawn } = {}) {
   if (!child || child.exitCode != null || child.signalCode != null) return;
+  // The owned cmd wrapper waits for PowerShell. Stop that exact process tree on
+  // cancellation so its inner helper cannot survive an abandoned handoff.
+  if (platform === 'win32' && Number.isSafeInteger(child.pid) && child.pid > 0 && child.pid !== process.pid) {
+    await new Promise(resolve => {
+      let killer;
+      const finish = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { killer?.kill(); finish(); }, 3000);
+      try {
+        killer = spawnImpl(path.win32.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        killer.once('exit', finish); killer.once('error', finish);
+      } catch { finish(); }
+    });
+    if (child.exitCode != null || child.signalCode != null) return;
+  }
   await new Promise(resolve => {
     const finish = () => { clearTimeout(timer); child.removeListener('exit', finish); resolve(); };
     const timer = setTimeout(finish, 2000);
@@ -351,15 +379,16 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       if (hash.digest('hex') !== digest) throw new Error('다운로드 파일의 체크섬이 일치하지 않아.');
       const scriptPath = path.join(stageDir, 'apply-update.ps1');
       const script = makeUpdateScript({ parentPid: process.pid, installer: stagedExe, appExe, scriptPath, expectedHash: digest });
-      await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
+      const scriptBytes = Buffer.from('\ufeff' + script, 'utf8');
+      await fs.writeFile(scriptPath, scriptBytes);
       const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
-      const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const launch = makeHelperLaunch({ systemRoot, scriptPath, scriptHash: crypto.createHash('sha256').update(scriptBytes).digest('hex') });
       const helperEnv = { ...env };
       const blockedEnv = new Set(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH']);
       for (const key of Object.keys(helperEnv)) if (blockedEnv.has(key.toUpperCase())) delete helperEnv[key];
       // Execute our generated literal script directly. No machine or process policy changes.
       // Its working directory must remain outside the installation being replaced.
-      helper = spawnImpl(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, cwd: dataDir, env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      helper = spawnImpl(launch.executable, launch.args, { detached: true, windowsHide: true, windowsVerbatimArguments: true, cwd: dataDir, env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       await waitForHelperReady(helper, { timeoutMs: helperTimeoutMs });
       await setStageOwner(stageDir, helper.pid);
       helper.stdout.unref?.();
@@ -371,7 +400,7 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
     } catch (error) {
       // The still-open app keeps the helper waiting. Stop it before deleting its
       // installer, including when readiness or the ownership handoff failed.
-      if (!handedOff) await stopHelper(helper);
+      if (!handedOff) await stopHelper(helper, { env });
       // Only our unique staging directory is removed. Existing app/settings stay intact.
       if (stageDir) await fs.rm(stageDir, { recursive: true, force: true }).catch(() => {});
       return { status: 'retry', message: `업데이트를 적용하지 못했어. ${error.message}` };
@@ -380,4 +409,4 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
   return { checkUpdate, installUpdate };
 }
 
-module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, makeUpdateScript, waitForHelperReady, HELPER_READY, readLimited, fetchResponse };
+module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, makeUpdateScript, makeHelperLaunch, waitForHelperReady, stopHelper, HELPER_READY, readLimited, fetchResponse };

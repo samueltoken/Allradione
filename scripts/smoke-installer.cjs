@@ -319,20 +319,45 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
         const value = Reflect.get(target, key, target);
         return typeof value === 'function' ? value.bind(target) : value;
       } }) : app;
-      const diagnosticSpawn = fixture.legacyDiagnostic ? (file, args, options) => {
-        const stdout = fs.openSync(fixture.helperStdout, 'a');
-        const stderr = fs.openSync(fixture.helperStderr, 'a');
+      const diagnosticSpawn = (file, args, options) => {
+        const savedScript = fixture.traceFile.replace(/-trace\.json$/, '-helper-script.ps1');
+        // The current updater may launch a short cmd.exe/bootstrap command whose
+        // arguments do not contain the full script. Preserve the owned stage file.
+        for (const directory of trace.stageDirectories) {
+          try { fs.copyFileSync(path.join(directory, 'apply-update.ps1'), savedScript); } catch {}
+        }
+        const stdout = fixture.legacyDiagnostic ? fs.openSync(fixture.helperStdout, 'a') : null;
+        const stderr = fixture.legacyDiagnostic ? fs.openSync(fixture.helperStderr, 'a') : null;
         let child;
-        try { child = require('node:child_process').spawn(file, args, { ...options, stdio: ['ignore', stdout, stderr] }); }
-        finally { fs.closeSync(stdout); fs.closeSync(stderr); }
-        trace.helper = { pid: child.pid, executable: file, exitCode: null, signal: null };
+        try { child = require('node:child_process').spawn(file, args, fixture.legacyDiagnostic ? { ...options, stdio: ['ignore', stdout, stderr] } : options); }
+        finally { if (stdout !== null) fs.closeSync(stdout); if (stderr !== null) fs.closeSync(stderr); }
+        // Current-mode streams/options stay untouched. Observe each chunk before
+        // the updater's READY listener; EventEmitter still delivers it to both.
+        if (!fixture.legacyDiagnostic) {
+          child.stdout?.on('data', chunk => fs.appendFileSync(fixture.helperStdout, chunk));
+          child.stderr?.on('data', chunk => fs.appendFileSync(fixture.helperStderr, chunk));
+        }
+        if (!fs.existsSync(savedScript) && args.at(-2) === '-EncodedCommand') fs.writeFileSync(savedScript, Buffer.from(args.at(-1), 'base64').toString('utf16le'));
+        trace.helper = { pid: child.pid, executable: file, argumentCharacters: args.reduce((total, argument) => total + argument.length + 1, 0), cwd: options.cwd || process.cwd(), detached: options.detached, stdio: options.stdio, hasPsModulePath: Object.keys(options.env || process.env).some(key => key.toUpperCase() === 'PSMODULEPATH'), exitCode: null, signal: null };
         persist();
-        child.once('exit', (code, signal) => { trace.helper.exitCode = code; trace.helper.signal = signal; persist(); });
+        child.once('exit', (code, signal) => {
+          trace.helper.exitCode = code; trace.helper.signal = signal;
+          // Registered before the production listener: retain a helper catch log
+          // synchronously before installUpdate removes its failed staging folder.
+          for (const directory of trace.stageDirectories) {
+            const errorFile = path.join(directory, 'update-error.txt');
+            try {
+              trace.helper.errorLog = fs.readFileSync(errorFile, 'utf8');
+              fs.writeFileSync(fixture.traceFile.replace(/-trace\.json$/, '-helper-error.txt'), trace.helper.errorLog);
+            } catch {}
+          }
+          persist();
+        });
         return child;
-      } : undefined;
+      };
       const updater = require(sourcePath).createUpdater({
         app: updaterApp, shell, dataDir: app.getPath('userData'),
-        ...(diagnosticSpawn ? { spawnImpl: diagnosticSpawn } : {}),
+        spawnImpl: diagnosticSpawn,
         // Only the transport is controlled: stream the genuine newly built NSIS
         // installer through the released downloader and its real SHA256 validation.
         fetchImpl: async url => {
@@ -387,7 +412,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
     const afterSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
     for (const key of ['volume', 'favorites', 'recent', 'widgetEnabled', 'widgetSize', 'reducedMotion', 'lastCountry']) assert.deepEqual(afterSettings[key], beforeSettings[key], `Actual app update must preserve ${key}`);
     await stopOwnedRestart(executable);
-    return { check: 'actual installed app Settings update downloads, validates, exits, installs and restarts', passed: true, releaseGate: !legacyDiagnostic, fromVersion, toVersion, reportedUpdaterVersion: reportedCurrentVersion || fromVersion, updaterSource: releasedUpdater?.source || 'current installed app.asar', updaterSha256: actual.sourceHash, originalPid: actual.pid, launcherPid: parent.pid, launcherExit: parentExit, actualParentExited: true, workingDirectory: actual.cwd, restartPids: restarted.map(process => process.pid), originalInstallLocationPreserved: true, settingsPreserved: true, stageRemoved: true, transport: 'controlled metadata and local real NSIS bytes; production downloader and app quit; legacy-only helper output capture' };
+    return { check: 'actual installed app Settings update downloads, validates, exits, installs and restarts', passed: true, releaseGate: !legacyDiagnostic, fromVersion, toVersion, reportedUpdaterVersion: reportedCurrentVersion || fromVersion, updaterSource: releasedUpdater?.source || 'current installed app.asar', updaterSha256: actual.sourceHash, originalPid: actual.pid, launcherPid: parent.pid, launcherExit: parentExit, actualParentExited: true, workingDirectory: actual.cwd, restartPids: restarted.map(process => process.pid), originalInstallLocationPreserved: true, settingsPreserved: true, stageRemoved: true, transport: 'controlled metadata and local real NSIS bytes; production downloader/app lifecycle; diagnostic helper output observation' };
   } catch (error) {
     const failureTrace = await readTrace().catch(() => null);
     const helper = failureTrace?.helper;

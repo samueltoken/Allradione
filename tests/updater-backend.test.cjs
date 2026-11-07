@@ -9,7 +9,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
-const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, makeUpdateScript, waitForHelperReady, HELPER_READY, readLimited, fetchResponse } = require('../electron/updater.cjs');
+const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, makeUpdateScript, makeHelperLaunch, waitForHelperReady, stopHelper, HELPER_READY, readLimited, fetchResponse } = require('../electron/updater.cjs');
 const tag = 'v0.2.0';
 const name = 'Allradione-Setup-0.2.0-x64.exe';
 const assetUrl = `https://github.com/samueltoken/Allradione/releases/download/${tag}/${name}`;
@@ -147,6 +147,37 @@ test('helper exit before readiness and readiness timeout reject the handoff', as
   await assert.rejects(waitForHelperReady(fakeHelper(), { timeoutMs: 10 }), /응답하지 않아/);
 });
 
+test('detached launch uses a bounded verified bootstrap and keeps all stage paths out of cmd syntax', () => {
+  const scriptPath = "C:\\Users\\O'Brien & test\\updates\\apply-update.ps1";
+  const launch = makeHelperLaunch({ systemRoot: 'C:\\Windows', scriptPath, scriptHash: hash });
+  assert.equal(launch.executable, 'C:\\Windows\\System32\\cmd.exe');
+  assert.deepEqual(launch.args.slice(0, 3), ['/d', '/s', '/c']);
+  const command = launch.args[3];
+  assert.ok(command.length < 8000);
+  assert.ok(!command.includes(scriptPath));
+  const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)"$/.exec(command)[1];
+  const bootstrap = Buffer.from(encoded, 'base64').toString('utf16le');
+  assert.ok(bootstrap.includes("O''Brien & test"));
+  assert.ok(bootstrap.includes(hash));
+  assert.ok(bootstrap.indexOf('SHA256 mismatch') < bootstrap.indexOf('scriptblock'));
+  assert.ok(!command.includes('ExecutionPolicy'));
+  assert.throws(() => makeHelperLaunch({ systemRoot: 'C:\\Windows&whoami', scriptPath, scriptHash: hash }));
+});
+
+test('cancelling an owned Windows wrapper terminates only its exact process tree', async () => {
+  const child = fakeHelper(); child.pid = process.pid + 1000;
+  const calls = [];
+  await stopHelper(child, { platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, spawnImpl: (exe, args, options) => {
+    calls.push({ exe, args, options });
+    const killer = new EventEmitter(); killer.kill = () => {};
+    process.nextTick(() => { child.exitCode = 1; child.emit('exit', 1); killer.emit('exit', 0); });
+    return killer;
+  } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].exe, 'C:\\Windows\\System32\\taskkill.exe');
+  assert.deepEqual(calls[0].args, ['/PID', String(child.pid), '/T', '/F']);
+});
+
 test('Windows PowerShell executes the generated encoded helper and safely rejects missing or corrupt installers', { skip: process.platform !== 'win32', timeout: 40000 }, async t => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-powershell-test-'));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
@@ -197,20 +228,27 @@ test('real Windows helper recognizes a running executable through a junction and
   // process reports its genuine path, while appExe deliberately uses a junction.
   script = script.replace(`[Console]::Out.WriteLine('${HELPER_READY}')`, `if (-not (Find-AppProcess)) { throw 'Live executable was not recognized through its junction alias' }\n  [Console]::Out.WriteLine('${HELPER_READY}')`);
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
-  const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { cwd: stage, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const launch = makeHelperLaunch({ systemRoot: process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', scriptPath, scriptHash: crypto.createHash('sha256').update(await fs.readFile(scriptPath)).digest('hex') });
+  const helperEnv = { ...process.env };
+  for (const key of Object.keys(helperEnv)) if (['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH'].includes(key.toUpperCase())) delete helperEnv[key];
+  // Match the production detached, hidden helper and clean environment. An
+  // attached PowerShell success does not establish that this launch mode works.
+  const child = spawn(launch.executable, launch.args, { cwd: stage, detached: true, env: helperEnv, windowsHide: true, windowsVerbatimArguments: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-8192); });
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
   try {
-    await waitForHelperReady(child, { timeoutMs: 15000 });
+    try { await waitForHelperReady(child, { timeoutMs: 15000 }); }
+    catch (error) {
+      const helperError = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8').catch(() => '');
+      assert.fail(`Detached helper readiness failed: ${error.message}\nexit=${child.exitCode}\nstdout=${stdout}\nstderr=${stderr}\nhelperError=${helperError}`);
+    }
     assert.equal(child.exitCode, null, 'The helper must wait after acknowledging readiness');
     assert.equal(process.kill(process.pid, 0), true, 'The original application process remains alive');
     assert.deepEqual(await fs.readFile(installer), payload, 'The installer must remain untouched while its parent is alive');
     await assert.rejects(fs.access(path.join(stage, 'update-error.txt')), { code: 'ENOENT' });
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      const stopped = new Promise(resolve => child.once('exit', resolve));
-      child.kill();
-      await stopped;
-    }
+    await stopHelper(child);
   }
 });
 
@@ -249,10 +287,10 @@ test('a release checked before asset upload becomes installable without restarti
   assert.equal(result.status, 'installing');
   assert.deepEqual(calls, { checks: 2, downloads: 1, opened: 0, quit: 1 });
   assert.equal(launches.length, 1);
-  const script = Buffer.from(launches[0].args.at(-1), 'base64').toString('utf16le');
+  const [stage] = await fs.readdir(path.join(dataDir, 'updates'));
+  const script = await fs.readFile(path.join(dataDir, 'updates', stage, 'apply-update.ps1'), 'utf8');
   assert.ok(script.includes(digest), 'The helper must verify the downloaded installer again');
   assert.ok(script.includes("@('/S', '--updated', '--force-run')"), 'Verified updates must use silent installation and restart');
-  const [stage] = await fs.readdir(path.join(dataDir, 'updates'));
   assert.deepEqual(await fs.readFile(path.join(dataDir, 'updates', stage, name)), payload);
 });
 
@@ -392,12 +430,14 @@ test('installed Windows downloads a verified setup then exits only after helper 
   assert.match(result.message, /설치 파일 검증 완료/);
   assert.equal(quitCount, 1);
   assert.equal(launches.length, 1);
-  assert.equal(launches[0].exe, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-  const script = Buffer.from(launches[0].args.at(-1), 'base64').toString('utf16le');
+  assert.equal(launches[0].exe, 'C:\\Windows\\System32\\cmd.exe');
+  assert.equal(launches[0].options.detached, true);
+  assert.equal(launches[0].options.windowsVerbatimArguments, true);
+  const [stageName] = await fs.readdir(path.join(dataDir, 'updates'));
+  const script = await fs.readFile(path.join(dataDir, 'updates', stageName, 'apply-update.ps1'), 'utf8');
   assert.ok(script.includes(name));
   assert.ok(script.includes("@('/S', '--updated', '--force-run')"));
   assert.ok(!script.includes('Move-Item'));
-  const [stageName] = await fs.readdir(path.join(dataDir, 'updates'));
   const stageMarker = JSON.parse(await fs.readFile(path.join(dataDir, 'updates', stageName, 'allradione-update-stage.json'), 'utf8'));
   assert.equal(stageMarker.ownerPid, process.pid, 'The stage is transferred to the spawned helper PID');
   assert.equal(stageMarker.installerName, name);
