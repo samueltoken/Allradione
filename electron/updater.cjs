@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { STAGE_MARKER, createStageMarker, setStageOwner } = require('./update-staging.cjs');
 
 const REPO = 'samueltoken/Allradione';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -143,7 +144,10 @@ try {
 } finally {
   Remove-Item -LiteralPath $installer -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
-  if ($installed) { Remove-Item -LiteralPath $stageDir -ErrorAction SilentlyContinue }
+  if ($installed) {
+    Remove-Item -LiteralPath (Join-Path $stageDir '${STAGE_MARKER}') -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stageDir -ErrorAction SilentlyContinue
+  }
 }
 `;
 }
@@ -202,6 +206,7 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       const updateRoot = path.join(dataDir, 'updates');
       await fs.mkdir(updateRoot, { recursive: true });
       stageDir = await fs.mkdtemp(path.join(updateRoot, 'release-'));
+      await createStageMarker(stageDir, { installerName: asset.name });
       const stagedExe = path.join(stageDir, asset.name);
       const response = await fetchResponse(asset.browser_download_url, { fetchImpl, signal: AbortSignal.timeout(10 * 60 * 1000) });
       if (!response.ok || !response.body) throw new Error(`다운로드 오류 (${response.status}).`);
@@ -231,6 +236,13 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       // Execute our generated literal script directly. No machine or process policy changes.
       const child = spawnImpl(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, stdio: 'ignore' });
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      try { await setStageOwner(stageDir, child.pid); }
+      catch (error) {
+        // The helper is still waiting for this app, so stop our own child before
+        // abandoning its stage; it must not outlive a failed ownership handoff.
+        child.kill();
+        throw error;
+      }
       child.unref();
       handedOff = true;
       scheduleQuit(() => app.quit());

@@ -183,7 +183,7 @@ test('installed Windows downloads a verified setup then exits only after helper 
     spawnImpl: (exe, args, options) => {
       assert.equal(quitCount, 0);
       launches.push({ exe, args, options });
-      const child = new EventEmitter(); child.unref = () => {};
+      const child = new EventEmitter(); child.pid = process.pid; child.unref = () => {};
       process.nextTick(() => child.emit('spawn'));
       return child;
     }
@@ -198,6 +198,10 @@ test('installed Windows downloads a verified setup then exits only after helper 
   assert.ok(script.includes(name));
   assert.ok(script.includes("@('/S', '--updated', '--force-run')"));
   assert.ok(!script.includes('Move-Item'));
+  const [stageName] = await fs.readdir(path.join(dataDir, 'updates'));
+  const stageMarker = JSON.parse(await fs.readFile(path.join(dataDir, 'updates', stageName, 'allradione-update-stage.json'), 'utf8'));
+  assert.equal(stageMarker.ownerPid, process.pid, 'The stage is transferred to the spawned helper PID');
+  assert.equal(stageMarker.installerName, name);
   await updater.installUpdate();
   assert.equal(launches.length, 1, 'the handed-off update remains locked until exit');
 });

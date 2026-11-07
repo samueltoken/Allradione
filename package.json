@@ -1,7 +1,7 @@
 {
   "name": "allradione",
   "productName": "Allradione",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "World radio with a tactile tuner, a 3D globe and transparent desktop widgets.",
   "author": "samueltoken",
   "license": "MIT",
@@ -12,10 +12,11 @@
     "build": "tsc --noEmit && vite build",
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:win": "npm run build && npm run build:launcher && electron-builder --win nsis --x64 --publish never",
     "test:native": "node scripts/smoke-electron.cjs",
     "test:audio": "electron --mute-audio tests/electron-audio-backend.smoke.cjs",
-    "test:installer": "node scripts/smoke-installer.cjs"
+    "test:installer": "node scripts/smoke-installer.cjs",
+    "build:launcher": "node scripts/build-desktop-launcher.cjs"
   },
   "dependencies": {
     "@fontsource-variable/sora": "^5.3.0",
@@ -68,13 +69,19 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
       "shortcutName": "Allradione",
       "uninstallDisplayName": "Allradione",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
       "include": "electron/installer.nsh"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "assets/desktop-launcher.exe",
+        "to": "desktop-launcher.exe"
+      }
+    ]
   }
 }

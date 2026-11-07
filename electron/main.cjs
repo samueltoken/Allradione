@@ -11,6 +11,8 @@ const {configurePermissions}=require('./permissions.cjs');
 const {createCacheService}=require('./cache.cjs');
 const {createDesktopService}=require('./desktop.cjs');
 const {prepareDataDir}=require('./data.cjs');
+const {cleanupUpdateStages}=require('./update-staging.cjs');
+const {refreshVersionCodeCache}=require('./version-cache.cjs');
 const ROOT=path.join(__dirname,'..');
 const INDEX=path.join(ROOT,'dist','index.html');
 const DEV=process.env.ALLRADIONE_DEV_URL;
@@ -99,6 +101,9 @@ async function start(){
  preferences=await createPreferences(dataDir);radio=createRadio(dataDir);proxy=await createStreamProxy();updater=createUpdater({app,shell,dataDir});
  const codeCacheDir=path.join(dataDir,'Code Cache');
  session.defaultSession.setCodeCachePath(codeCacheDir);
+ const versionCache=await refreshVersionCodeCache({dataDir,version:app.getVersion(),ses:session.defaultSession});
+ if(versionCache.error)console.warn('Allradione code cache cleanup:',versionCache.error);
+ cleanupUpdateStages(dataDir).then(result=>{if(result.errors.length)console.warn('Allradione update cleanup:',result.errors.join('; '));}).catch(error=>console.warn('Allradione update cleanup:',error.message));
  cacheService=createCacheService({ses:session.defaultSession,radio,dataDir,codeCacheDir});
  desktopService=createDesktopService({app,shell});
  let devUrl;

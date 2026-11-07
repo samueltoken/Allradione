@@ -82,6 +82,10 @@ export class RadioPlayer {
     if (!Number.isFinite(value)) return;
     this.audio.volume = Math.max(0, Math.min(1, value));
     this.snapshot.volume = this.audio.volume;
+    if (this.audio.volume === 0) {
+      this.spectrum?.reset();
+      this.snapshot.spectrum = undefined;
+    }
     this.emit();
   }
 
@@ -303,6 +307,14 @@ export class RadioPlayer {
 
   private sampleSpectrum(): void {
     if (!this.visualizing || !this.snapshot.playing || !this.analyser || !this.frequencyData || !this.timeData || !this.spectrum) return;
+    if (this.audio.volume === 0 || this.audio.muted) {
+      this.spectrum.reset();
+      if (this.snapshot.spectrum) {
+        this.snapshot.spectrum = undefined;
+        this.emit();
+      }
+      return;
+    }
     this.analyser.getFloatFrequencyData(this.frequencyData);
     this.analyser.getFloatTimeDomainData(this.timeData);
     let sumSquares = 0;

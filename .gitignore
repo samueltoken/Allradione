@@ -4,3 +4,5 @@ release/
 artifacts/
 *.log
 .env*
+assets/desktop-launcher.exe
+native/desktop-launcher/build/

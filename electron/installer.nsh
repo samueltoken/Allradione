@@ -56,6 +56,16 @@ FunctionEnd
     Push $2
     Push $3
     SetShellVarContext current
+    ; The helper refuses unrelated desktop files and verifies its installed location.
+    ${If} ${FileExists} "$INSTDIR\resources\desktop-launcher.exe"
+      ExecWait '"$INSTDIR\resources\desktop-launcher.exe" --remove-desktop --quiet' $3
+    ${EndIf}
+    ReadRegStr $1 HKCU "Software\Allradione" AppId
+    ReadRegStr $2 HKCU "Software\Allradione" InstallLocation
+    ${If} $1 == "io.github.samueltoken.allradione"
+    ${AndIf} $2 == "$INSTDIR"
+      DeleteRegKey HKCU "Software\Allradione"
+    ${EndIf}
     StrCpy $0 "$APPDATA\Allradione"
     System::Call 'kernel32::GetFileAttributesW(w r0) i.r3'
     IntOp $3 $3 & 0x400
@@ -155,4 +165,20 @@ Var AllradioneHadInstall
     Pop $1
     Pop $0
   ${EndIf}
+  ; A stable per-user location is resolved by the actual desktop executable.
+  Push $0
+  Push $1
+  FileOpen $0 "$INSTDIR\allradione-install-owner.txt" w
+  FileWrite $0 "io.github.samueltoken.allradione"
+  FileClose $0
+  WriteRegStr HKCU "Software\Allradione" AppId "io.github.samueltoken.allradione"
+  WriteRegStr HKCU "Software\Allradione" InstallLocation "$INSTDIR"
+  ${IfNot} ${isNoDesktopShortcut}
+    ExecWait '"$INSTDIR\resources\desktop-launcher.exe" --install-desktop --quiet' $1
+    ${If} $1 != 0
+      DetailPrint "Desktop icon could not be created; existing unrelated files were preserved."
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
 !macroend

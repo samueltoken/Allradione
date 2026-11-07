@@ -6,7 +6,7 @@ const os=require('node:os');
 const {createCacheService,metadataFiles,treeBytes}=require('../electron/cache.cjs');
 const {createRadio}=require('../electron/radio.cjs');
 const {prepareDataDir,OWNER_FILE}=require('../electron/data.cjs');
-const {APP_ID,createDesktopService}=require('../electron/desktop.cjs');
+const {APP_ID,INSTALL_MARKER,createDesktopService}=require('../electron/desktop.cjs');
 async function temp(fn){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'allradione-install-test-'));try{return await fn(dir);}finally{await fs.rm(dir,{recursive:true,force:true});}}
 
 test('cache cleanup removes only allowlisted metadata and preserves settings, favorites, unrelated files',()=>temp(async dir=>{
@@ -46,11 +46,28 @@ test('portable settings handoff copies sanitized preferences once without modify
  await fs.writeFile(path.join(data,'settings.json'),JSON.stringify({volume:.9}));await prepareDataDir({app,env:{PORTABLE_EXECUTABLE_FILE:path.join(old,'Allradione.exe')}});assert.equal(JSON.parse(await fs.readFile(path.join(data,'settings.json'),'utf8')).volume,.9);
 }));
 
-test('desktop shortcut uses only current installed executable and refuses unrelated existing link',()=>temp(async dir=>{
- const exe=path.join(dir,'Allradione.exe');await fs.writeFile(exe,'MZtest');await fs.writeFile(path.join(dir,'Uninstall Allradione.exe'),'MZtest');const writes=[];
- const app={isPackaged:true,getPath:key=>key==='exe'?exe:dir};
- const shell={writeShortcutLink:(...args)=>{writes.push(args);return true;},readShortcutLink:()=>({target:'C:\\Other\\Other.exe'})};
- const service=createDesktopService({app,shell,platform:'win32'});assert.equal((await service.createShortcut()).created,true);assert.equal(writes[0][2].target,exe);assert.equal(writes[0][2].appUserModelId,APP_ID);
- await fs.writeFile(path.join(dir,'Allradione.lnk'),'other-link');assert.equal((await service.createShortcut()).created,false);assert.equal(writes.length,1);
- assert.equal((await createDesktopService({app:{...app,isPackaged:false},shell,platform:'win32'}).createShortcut()).created,false);
+async function installedFixture(dir){
+ const exe=path.join(dir,'Allradione.exe');await fs.mkdir(path.join(dir,'resources'));
+ for(const file of [exe,path.join(dir,'Uninstall Allradione.exe'),path.join(dir,'resources','desktop-launcher.exe')])await fs.writeFile(file,'MZtest');
+ await fs.writeFile(path.join(dir,INSTALL_MARKER),APP_ID);return {isPackaged:true,getPath:key=>key==='exe'?exe:dir};
+}
+test('desktop creation invokes only the installed native helper and preserves its ownership-conflict result',()=>temp(async dir=>{
+ const app=await installedFixture(dir),calls=[];let code=0;
+ const service=createDesktopService({app,platform:'win32',runHelper:async(...args)=>{calls.push(args);return code;}});
+ assert.equal((await service.createShortcut()).created,true);
+ assert.deepEqual(calls[0],[path.join(dir,'resources','desktop-launcher.exe'),['--install-desktop','--quiet']]);
+ code=2;assert.equal((await service.createShortcut()).created,false);
+ assert.equal((await createDesktopService({app:{...app,isPackaged:false},platform:'win32',runHelper:()=>assert.fail('development must not run native files')}).createShortcut()).created,false);
+ await fs.writeFile(path.join(dir,INSTALL_MARKER),'unrelated');assert.equal((await service.createShortcut()).created,false);assert.equal(calls.length,2);
+}));
+test('simultaneous desktop creation requests share one native operation',()=>temp(async dir=>{
+ const app=await installedFixture(dir);let release,calls=0;const gate=new Promise(resolve=>{release=resolve;});
+ const service=createDesktopService({app,platform:'win32',runHelper:async()=>{calls++;await gate;return 0;}});
+ const first=service.createShortcut(),second=service.createShortcut();assert.equal(first,second);release();assert.equal((await first).created,true);assert.equal(calls,1);
+}));
+test('desktop creation refuses a resources junction that redirects the helper outside its installation',()=>temp(async dir=>{
+ const app=await installedFixture(dir),outside=path.join(dir,'outside');
+ await fs.rename(path.join(dir,'resources'),outside);await fs.symlink(outside,path.join(dir,'resources'),'junction');
+ const service=createDesktopService({app,platform:'win32',runHelper:()=>assert.fail('Redirected helper must never execute')});
+ assert.equal((await service.createShortcut()).created,false);
 }));

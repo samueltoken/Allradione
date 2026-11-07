@@ -16,7 +16,7 @@ test('installer harness rejects drive roots, relative paths and injected argumen
 });
 
 test('installer harness refuses any pre-existing installation, data, shortcuts or process', () => {
-  const clean = { installations: [], existingShortcuts: [], existingData: [], runningProcesses: [] };
+  const clean = { installations: [], existingShortcuts: [], existingData: [], runningProcesses: [], existingLaunchers: [] };
   assert.doesNotThrow(() => assertFreshSnapshot(clean));
   for (const key of Object.keys(clean)) assert.throws(() => assertFreshSnapshot({ ...clean, [key]: ['pre-existing user item'] }));
 });

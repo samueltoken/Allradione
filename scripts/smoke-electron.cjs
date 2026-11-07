@@ -118,6 +118,87 @@ async function captureTransparentWidget(page, fileName) {
   results.push({ check: `${fileName} actual PNG alpha`, ...pixels });
 }
 
+async function assertAudioDrivenWidget(main, widget, kind) {
+  const ts = require('typescript');
+  const processor = ts.transpileModule(await fs.readFile(path.join(ROOT, 'src', 'spectrum.ts'), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  // Execute the production spectrum processor against actual Web Audio samples.
+  // This is explicitly synthetic PCM visual QA, separate from the real station probe.
+  const initialize = new Function('state', `const exports = {}; ${processor}
+    return (async () => {
+      const context = new AudioContext();
+      const analyser = context.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0;
+      const source = context.createBufferSource(); const input = context.createGain(); const output = context.createGain(); output.gain.value = 0;
+      const buffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate); const pcm = buffer.getChannelData(0); let peak = 0;
+      for (let i = 0; i < pcm.length; i++) { const time = i / context.sampleRate; let sample = 0; for (let h = 1; h <= 25; h++) sample += Math.sin(time * 2 * Math.PI * 110 * h + h * .71) / Math.pow(h, .65); sample *= .65 + .35 * Math.sin(time * 3) ** 2; pcm[i] = sample; peak = Math.max(peak, Math.abs(sample)); }
+      for (let i = 0; i < pcm.length; i++) pcm[i] = pcm[i] / peak * .5;
+      source.buffer = buffer; source.loop = true; source.connect(input); input.connect(analyser); analyser.connect(output); output.connect(context.destination);
+      const spectrum = new exports.RadioSpectrum(context.sampleRate, analyser.fftSize, 32); const frequencies = new Float32Array(analyser.frequencyBinCount); const waveform = new Float32Array(analyser.fftSize);
+      const qa = { context, source, input, latest: [], frames: 0, timer: 0 };
+      await context.resume(); source.start();
+      qa.timer = setInterval(() => { analyser.getFloatFrequencyData(frequencies); analyser.getFloatTimeDomainData(waveform); let sum = 0; for (const sample of waveform) sum += sample * sample; qa.latest = [...spectrum.process(frequencies, Math.sqrt(sum / waveform.length), 50)]; qa.frames++; window.allradione.publishPlayer({ ...state, spectrum: qa.latest }); }, 50);
+      window.__allradioneAudioQa = qa;
+      return { sampleRate: context.sampleRate, state: context.state };
+    })();`);
+  const audio = await main.evaluate(initialize, fixtureState);
+  assert.equal(audio.state, 'running', 'Actual AudioContext must run for visual response verification');
+  try {
+    await expect.poll(() => main.evaluate(() => { const q = window.__allradioneAudioQa; return q.frames >= 8 ? q.latest.at(-1) : 0; }), { timeout: 6000 }).toBeGreaterThan(0.08);
+    const measured = await main.evaluate(() => [...window.__allradioneAudioQa.latest]);
+    let active;
+    if (kind === 'small') {
+      const sample = () => widget.locator('.radar-ring').evaluateAll(rings => rings.map(ring => ({ transform: getComputedStyle(ring).transform, width: parseFloat(getComputedStyle(ring).strokeWidth) })));
+      active = await sample();
+      await expect.poll(async () => JSON.stringify(await sample()), { timeout: 3000 }).not.toBe(JSON.stringify(active));
+    } else {
+      active = await widget.locator('.retro-wave .waveform').evaluate(element => {
+        const box = element.getBoundingClientRect(); const bars = [...element.children].map(bar => bar.getBoundingClientRect());
+        return { count: bars.length, width: box.width, leftGap: bars[0].left - box.left, rightGap: box.right - bars.at(-1).right, rightHeight: bars.at(-1).height };
+      });
+      assert.ok(active.count >= 24 && active.width > 250, 'Medium waveform must span a useful display width');
+      assert.ok(Math.abs(active.leftGap) <= 2 && Math.abs(active.rightGap) <= 2, 'Actual waveform bars must reach both edges');
+      await expect.poll(() => widget.locator('.retro-wave .waveform i').last().evaluate(bar => bar.getBoundingClientRect().height), { timeout: 3000 }).toBeGreaterThan(5);
+    }
+    await captureTransparentWidget(widget, kind === 'small' ? 'widget-small.png' : 'widget.png');
+    await main.evaluate(() => { const q = window.__allradioneAudioQa; q.input.gain.setValueAtTime(0, q.context.currentTime); });
+    await expect.poll(() => main.evaluate(() => Math.max(...window.__allradioneAudioQa.latest)), { timeout: 3000 }).toBeLessThan(0.003);
+    if (kind === 'small') {
+      await expect.poll(() => widget.locator('.radar-ring').evaluateAll(rings => Math.max(...rings.map(ring => parseFloat(getComputedStyle(ring).strokeWidth)))), { timeout: 4000 }).toBeLessThan(Math.max(...active.map(ring => ring.width)) - 0.4);
+      const silent = await widget.locator('.radar-ring').evaluateAll(rings => rings.map(ring => ({ transform: getComputedStyle(ring).transform, width: parseFloat(getComputedStyle(ring).strokeWidth) })));
+      assert.notDeepEqual(silent, active, 'Radar must visibly respond differently to actual audio and silence');
+    } else await expect.poll(() => widget.locator('.retro-wave .waveform i').evaluateAll(bars => Math.max(...bars.map(bar => bar.getBoundingClientRect().height))), { timeout: 4000 }).toBeLessThan(3.5);
+    results.push({ check: `${kind} widget responds to real synthetic PCM and silence`, sampleRate: audio.sampleRate, source: '25 actual harmonics, 110–2750 Hz, production RadioSpectrum', lastBand: measured.at(-1), silentMax: await main.evaluate(() => Math.max(...window.__allradioneAudioQa.latest)) });
+  } finally {
+    await main.evaluate(async () => { const q = window.__allradioneAudioQa; if (q) { clearInterval(q.timer); q.source.stop(); await q.context.close(); delete window.__allradioneAudioQa; } });
+    await main.evaluate(state => window.allradione.publishPlayer(state), fixtureState);
+  }
+}
+
+async function assertCompactLayout(main) {
+  const original = await main.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const native = await nativeWindow('main');
+  const resize = async size => {
+    if (process.platform === 'linux' && native.workArea.width <= 1) await main.setViewportSize(size);
+    else await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows().find(window => !window.webContents.getURL().includes('widget=')).setSize(size.width, size.height), size);
+    await main.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, size, { timeout: TIMEOUT });
+  };
+  const observations = [];
+  for (const size of [{ width: 960, height: 640 }, { width: 1024, height: 720 }]) {
+    await resize(size);
+    const measured = await main.evaluate(() => {
+      const status = document.querySelector('.transport-status'); status.textContent = 'LIVE';
+      const range = document.createRange(); range.selectNodeContents(status); const text = range.getBoundingClientRect(); const footer = document.querySelector('.playerbar').getBoundingClientRect();
+      return { text: { top: text.top, bottom: text.bottom, left: text.left, right: text.right }, footer: { top: footer.top, bottom: footer.bottom }, nameFont: parseFloat(getComputedStyle(document.querySelector('.station-row-name')).fontSize), metaFont: parseFloat(getComputedStyle(document.querySelector('.station-row-sub')).fontSize), flagBorders: [...document.querySelectorAll('.country-stamp')].map(element => ['Top','Right','Bottom','Left'].map(side => parseFloat(getComputedStyle(element)['border' + side + 'Width']))) };
+    });
+    assert.ok(measured.text.top >= measured.footer.top && measured.text.bottom <= Math.min(size.height, measured.footer.bottom) + 0.5 && measured.text.left >= 0 && measured.text.right <= size.width, `LIVE text must fit inside footer and ${size.width}×${size.height} viewport: ${JSON.stringify(measured)}`);
+    assert.ok(measured.nameFont >= 18 && measured.metaFont >= 12, 'Station names and metadata must remain readable in compact windows');
+    assert.ok(measured.flagBorders.length && measured.flagBorders.flat().every(width => width === 0), 'Country flag container must have no border');
+    await main.screenshot({ path: path.join(OUTPUT, `compact-${size.width}x${size.height}-ui-fixture.png`) });
+    observations.push({ ...size, ...measured });
+  }
+  await resize(original);
+  results.push({ check: 'compact footer text fits, list text remains legible and country flag is borderless', observations });
+}
+
 async function readPlayerState(page) {
   return page.evaluate(() => new Promise((resolve, reject) => {
     let off = () => {};
@@ -184,6 +265,7 @@ async function assertDialAndFlags(main) {
   const selectedName = await main.locator('[data-station-name]').innerText();
   assert.ok(stations.some(station => station.name === selectedName), 'Dial release must select an actual fixture station');
   await main.screenshot({ path: path.join(OUTPUT, 'dial-ui-fixture.png') });
+  await assertCompactLayout(main);
   results.push({ check: 'explicit UI fixture: dial drag and bundled flag', selectedName, flagLoaded: flag.loaded, audio: 'not attempted; fixture stream deliberately unavailable' });
 }
 
@@ -377,7 +459,7 @@ async function run() {
   await assertWidget('small', 176, 190);
   await main.evaluate(state => window.allradione.publishPlayer(state), fixtureState);
   await assertWidgetState(small);
-  await captureTransparentWidget(small, 'widget-small.png');
+  await assertAudioDrivenWidget(main, small, 'small');
 
   // The widget must send real IPC commands back to the one playback owner.
   await main.evaluate(() => {
@@ -397,7 +479,7 @@ async function run() {
   // The native owner retains the last state when replacing the widget window.
   await assertWidgetState(medium);
   await expect(medium.locator('#widget-volume')).toHaveValue('42');
-  await captureTransparentWidget(medium, 'widget.png');
+  await assertAudioDrivenWidget(main, medium, 'medium');
 
   await main.evaluate(() => window.allradione.windowAction('close'));
   await expect.poll(async () => (await nativeWindow('main'))?.visible, { timeout: TIMEOUT }).toBe(false);
