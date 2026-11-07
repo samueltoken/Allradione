@@ -59,7 +59,9 @@ async function main() {
     ].join('\r\n');
     const commandPath = path.join(temporary, 'compile.cmd');
     await fs.writeFile(commandPath, commands, 'utf8');
-    const result = await execute(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe', ['/d', '/s', '/c', '"' + commandPath + '"'], { cwd: temporary, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+    // A fixed basename avoids cmd.exe /s stripping Node's additional path quotes.
+    // All actual compiler/input paths are quoted inside the generated batch file.
+    const result = await execute(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe', ['/d', '/s', '/c', 'compile.cmd'], { cwd: temporary, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
     if (result.stdout.trim()) process.stdout.write(result.stdout);
     if (result.stderr.trim()) process.stderr.write(result.stderr);
     const binary = await fs.readFile(binaryPath);
