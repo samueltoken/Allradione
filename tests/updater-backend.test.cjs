@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, makeUpdateScript, readLimited, fetchResponse } = require('../electron/updater.cjs');
 const tag = 'v0.2.0';
 const name = 'Allradione-Setup-0.2.0-x64.exe';
@@ -67,6 +69,29 @@ test('updater script waits for clean exit and delegates replacement/restart to N
   assert.ok(!script.includes('--delete-app-data'));
   assert.ok(!script.includes('-Recurse'));
   assert.throws(() => makeUpdateScript({ parentPid: '1;evil', expectedHash: hash }));
+});
+
+test('Windows PowerShell executes the generated encoded helper and records a missing installer safely', { skip: process.platform !== 'win32', timeout: 25000 }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-powershell-test-'));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const stage = path.join(temporary, "O'Brien 한글");
+  await fs.mkdir(stage);
+  const installer = path.join(stage, 'missing-setup.exe');
+  const scriptPath = path.join(stage, 'apply-update.ps1');
+  const sentinel = path.join(stage, 'keep.txt');
+  await fs.writeFile(sentinel, 'keep this unrelated file');
+  const script = makeUpdateScript({ parentPid: process.pid, installer, appExe: path.join(stage, 'nonexistent-app.exe'), scriptPath, expectedHash: hash });
+  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
+  const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  try {
+    await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
+  } catch (error) {
+    assert.fail(`Generated PowerShell helper failed to execute: ${error.message}\nstdout: ${error.stdout || ''}\nstderr: ${error.stderr || ''}`);
+  }
+  const errorLog = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8');
+  assert.match(errorLog, /missing-setup\.exe/, 'The catch branch must record the missing installer, rather than fail to parse');
+  await assert.rejects(fs.access(scriptPath), { code: 'ENOENT' }, 'The generated helper must clean up its own script');
+  assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
 });
 
 test('download follows only trusted redirects and enforces body size', async () => {

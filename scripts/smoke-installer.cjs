@@ -59,18 +59,19 @@ async function poll(check, label, timeout = 30000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-function runProcess(executable, args, { timeout = 180000, env = process.env, verbatim = false, inherit = false, waitForExit = false } = {}) {
+function runProcess(executable, args, { timeout = 180000, env = process.env, verbatim = false, inherit = false, waitForExit = false, captureOutput = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd: ROOT, env, windowsHide: true, windowsVerbatimArguments: verbatim, stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout?.on('data', chunk => { stdout = (stdout + chunk).slice(-262144); });
     child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`${path.basename(executable)} exceeded ${timeout} ms`)); }, timeout);
-    child.once('error', error => { clearTimeout(timer); reject(error); });
+    const details = code => ({ exitCode: code, stdout: stdout.replace(/^\uFEFF/, '').trim(), stderr: stderr.replace(/^\uFEFF/, '').trim() });
+    const timer = setTimeout(() => { child.kill(); reject(Object.assign(new Error(`${path.basename(executable)} exceeded ${timeout} ms`), details(null))); }, timeout);
+    child.once('error', error => { clearTimeout(timer); reject(Object.assign(error, details(null))); });
     child.once(waitForExit ? 'exit' : 'close', code => {
       clearTimeout(timer);
-      if (code === 0) resolve(stdout.replace(/^\uFEFF/, '').trim());
-      else reject(new Error(`${path.basename(executable)} exited with ${code}: ${stderr.slice(-1500)}`));
+      if (code === 0) resolve(captureOutput ? details(code) : details(code).stdout);
+      else reject(Object.assign(new Error(`${path.basename(executable)} exited with ${code}: ${stderr.slice(-1500)}`), details(code)));
     });
   });
 }
@@ -144,28 +145,40 @@ async function exerciseUpdateHandoff({ installer, executable, userData }) {
   const script = makeUpdateScript({ parentPid: oldProcess.pid, installer: stagedInstaller, appExe: executable, scriptPath, expectedHash: digest });
   assert.match(script, /-ArgumentList @\('\/S', '--updated', '--force-run'\)/, 'Execute the production silent-update and restart flags');
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
+  await fs.writeFile(path.join(OUTPUT, 'update-handoff-generated.ps1'), '\ufeff' + script, 'utf8');
   const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let finished = false;
-  const handoff = runProcess(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 180000, waitForExit: true })
-    .then(() => ({ ok: true }), error => ({ ok: false, error })).finally(() => { finished = true; });
+  const handoff = runProcess(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 180000, waitForExit: true, captureOutput: true })
+    .then(output => ({ ok: true, output }), error => ({ ok: false, error, output: { exitCode: error.exitCode ?? null, stdout: error.stdout || '', stderr: error.stderr || '' } }))
+    .then(async result => {
+      await fs.writeFile(path.join(OUTPUT, 'update-handoff-process.json'), JSON.stringify({ ok: result.ok, ...result.output, error: result.error?.message }, null, 2));
+      return result;
+    }).finally(() => { finished = true; });
+  const checkHandoffFailure = async () => {
+    const errorLog = path.join(stage, 'update-error.txt');
+    if (await exists(errorLog)) {
+      const message = (await fs.readFile(errorLog, 'utf8')).replace(/^\uFEFF/, '').slice(0, 16000);
+      await fs.writeFile(path.join(OUTPUT, 'update-handoff-error.txt'), message);
+      throw new Error(`Generated update handoff failed: ${message}`);
+    }
+    if (finished) { const result = await handoff; if (!result.ok) throw result.error; }
+  };
   let restartObserved = false;
   try {
     await new Promise(resolve => setTimeout(resolve, 2500));
+    await checkHandoffFailure();
     assert.equal(oldProcess.exitCode, null, 'Controlled old process must still be alive');
-    assert.equal(finished, false, 'Update handoff must wait for the old process');
+    if (finished) {
+      const result = await handoff;
+      throw new Error(`Update handoff exited before the old process stopped: ${JSON.stringify(result.output)}`);
+    }
     assert.ok(await exists(stagedInstaller), 'Waiting handoff must retain its staged installer');
     assert.equal((await ownedProcesses(await windowsSnapshot(), executable)).length, 0, 'The app must not restart before the old process exits');
     oldProcess.stdin.end('exit');
     await poll(() => oldProcess.exitCode !== null, 'controlled old process exits', 5000);
 
     await poll(async () => {
-      if (finished) { const result = await handoff; if (!result.ok) throw result.error; }
-      const errorLog = path.join(stage, 'update-error.txt');
-      if (await exists(errorLog)) {
-        const message = (await fs.readFile(errorLog, 'utf8')).replace(/^\uFEFF/, '').slice(0, 4000);
-        await fs.writeFile(path.join(OUTPUT, 'update-handoff-error.txt'), message);
-        throw new Error(`Generated update handoff failed: ${message}`);
-      }
+      await checkHandoffFailure();
       const snapshot = await windowsSnapshot();
       restartObserved ||= (await ownedProcesses(snapshot, executable)).some(process => process.windowHandle !== 0);
       return restartObserved && !(await exists(stage));
@@ -176,6 +189,15 @@ async function exerciseUpdateHandoff({ installer, executable, userData }) {
     assert.equal(await exists(scriptPath), false, 'Successful updater must delete its generated script');
     await stopOwnedRestart(executable);
     return { check: 'same-build production PowerShell update handoff waits, reinstalls, restarts and clears staging', passed: true, flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: false };
+  } catch (error) {
+    let actualHash = null;
+    if (await exists(stagedInstaller)) {
+      const actual = crypto.createHash('sha256');
+      for await (const chunk of createReadStream(stagedInstaller)) actual.update(chunk);
+      actualHash = actual.digest('hex');
+    }
+    await fs.writeFile(path.join(OUTPUT, 'update-handoff-context.json'), JSON.stringify({ parentPid: oldProcess.pid, parentExitCode: oldProcess.exitCode, handoffFinished: finished, stageFiles: await fs.readdir(stage).catch(() => []), expectedHash: digest, actualHash, error: error.message }, null, 2));
+    throw error;
   } finally {
     if (oldProcess.exitCode === null && !oldProcess.stdin.writableEnded) oldProcess.stdin.end('exit');
     await handoff;
@@ -293,5 +315,5 @@ async function main() {
   console.log(`Installer lifecycle smoke passed (${results.length} checks): installation, upgrade preservation, native UI and complete uninstall.`);
 }
 
-module.exports = { nsisArguments, sameWindowsPath, assertFreshSnapshot };
+module.exports = { nsisArguments, sameWindowsPath, assertFreshSnapshot, runProcess };
 if (require.main === module) main().catch(error => { console.error('Installer lifecycle smoke failed:', error.message); process.exitCode = 1; });
