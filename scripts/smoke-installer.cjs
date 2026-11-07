@@ -113,7 +113,7 @@ async function stopOwnedRestart(executable) {
   if (!owned.length) return;
   const script = `
     $ErrorActionPreference = 'Stop'
-    $owned = @($env:ALLRADIONE_SMOKE_OWN_PROCESSES | ConvertFrom-Json)
+    $owned = ConvertFrom-Json -InputObject $env:ALLRADIONE_SMOKE_OWN_PROCESSES
     foreach($entry in $owned) {
       $current = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$entry.pid) -ErrorAction SilentlyContinue
       if($current -and $current.ExecutablePath -eq $entry.path) {
