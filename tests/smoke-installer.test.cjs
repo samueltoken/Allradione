@@ -10,7 +10,7 @@ test('NSIS custom directories with spaces remain the final unquoted argument', (
 });
 
 test('installer harness rejects drive roots, relative paths and injected arguments', () => {
-  for (const directory of ['C:\\', 'relative', 'C:\\Temp\\app\" /allusers', 'C:\\Temp\\app\n/S']) {
+  for (const directory of ['C:\\', 'C:\\Temp\\..', '\\\\server\\share', 'relative', 'C:\\Temp\\app\" /allusers', 'C:\\Temp\\app\n/S']) {
     assert.throws(() => nsisArguments(directory));
   }
 });

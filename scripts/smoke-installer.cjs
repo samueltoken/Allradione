@@ -3,6 +3,9 @@
 /** Windows CI only: install, retain preferences through an upgrade, test the installed app, uninstall. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const { createReadStream, realpath } = require('node:fs');
+const { promisify } = require('node:util');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
@@ -10,15 +13,35 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
 const MARKER = 'allradione-owner.txt';
+const canonicalPath = promisify(realpath.native);
 
 function sameWindowsPath(left, right) {
   return path.win32.normalize(left).replace(/[\\/]+$/, '').toLowerCase() === path.win32.normalize(right).replace(/[\\/]+$/, '').toLowerCase();
 }
 
+async function sameWindowsFile(left, right) {
+  if (!left || !right) return false;
+  try { return sameWindowsPath(await canonicalPath(left), await canonicalPath(right)); } catch { return false; }
+}
+
+async function assertShortcutTarget(snapshot, shortcut, executable, label) {
+  for (const link of snapshot.shortcutTargets) {
+    if (await sameWindowsFile(link.path, shortcut) && await sameWindowsFile(link.target, executable)) return;
+  }
+  const diagnostics = { expected: executable, canonicalExpected: await canonicalPath(executable), shortcuts: await Promise.all(snapshot.shortcutTargets.map(async link => ({ ...link, canonicalTarget: await canonicalPath(link.target).catch(() => null) }))) };
+  assert.fail(`${label}: ${JSON.stringify(diagnostics)}`);
+}
+
+async function ownedProcesses(snapshot, executable) {
+  const owned = [];
+  for (const process of snapshot.runningProcesses) if (await sameWindowsFile(process.path, executable)) owned.push(process);
+  return owned;
+}
+
 function nsisArguments(directory, { uninstall = false, noDesktopShortcut = false } = {}) {
   assert.ok(path.win32.isAbsolute(directory), 'NSIS destination must be an absolute Windows path');
   assert.ok(!/["\r\n]/.test(directory), 'NSIS destination cannot contain quotes or line breaks');
-  assert.notEqual(path.win32.parse(directory).root.toLowerCase(), directory.toLowerCase(), 'Never install into a drive root');
+  assert.equal(sameWindowsPath(directory, path.win32.parse(directory).root), false, 'Never install into a drive or share root');
   return ['/S', '/currentuser', ...(noDesktopShortcut ? ['--no-desktop-shortcut'] : []), `${uninstall ? '_?=' : '/D='}${directory}`];
 }
 
@@ -36,7 +59,7 @@ async function poll(check, label, timeout = 30000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-function runProcess(executable, args, { timeout = 180000, env = process.env, verbatim = false, inherit = false } = {}) {
+function runProcess(executable, args, { timeout = 180000, env = process.env, verbatim = false, inherit = false, waitForExit = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd: ROOT, env, windowsHide: true, windowsVerbatimArguments: verbatim, stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -44,7 +67,7 @@ function runProcess(executable, args, { timeout = 180000, env = process.env, ver
     child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
     const timer = setTimeout(() => { child.kill(); reject(new Error(`${path.basename(executable)} exceeded ${timeout} ms`)); }, timeout);
     child.once('error', error => { clearTimeout(timer); reject(error); });
-    child.once('close', code => {
+    child.once(waitForExit ? 'exit' : 'close', code => {
       clearTimeout(timer);
       if (code === 0) resolve(stdout.replace(/^\uFEFF/, '').trim());
       else reject(new Error(`${path.basename(executable)} exited with ${code}: ${stderr.slice(-1500)}`));
@@ -66,7 +89,7 @@ async function windowsSnapshot() {
     $installs = @(Get-ItemProperty $roots -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'Allradione' } | ForEach-Object { @{ key=$_.PSPath; directory=$_.InstallLocation; version=$_.DisplayVersion; uninstall=$_.UninstallString } })
     $shell = New-Object -ComObject WScript.Shell
     $shortcutTargets = @($links | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { @{ path=$_; target=$shell.CreateShortcut($_).TargetPath } })
-    $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'Allradione.exe'" | ForEach-Object { @{ pid=$_.ProcessId; path=$_.ExecutablePath } })
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'Allradione.exe'" | ForEach-Object { $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; @{ pid=$_.ProcessId; path=$_.ExecutablePath; windowHandle=if($p){$p.MainWindowHandle.ToInt64()}else{0} } })
     @{ desktop=$desktop; programs=$programs; appdata=$appdata; localdata=$localdata; installations=$installs; existingShortcuts=@($links | Where-Object { Test-Path -LiteralPath $_ }); shortcutTargets=$shortcutTargets; existingData=@($data | Where-Object { Test-Path -LiteralPath $_ }); runningProcesses=$processes } | ConvertTo-Json -Depth 5 -Compress
   `;
   return JSON.parse(await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 30000 }));
@@ -82,6 +105,83 @@ async function withInstalledApp(executable, action) {
     await page.locator('.desktop-shell').waitFor({ timeout: 30000 });
     return await action(application, page);
   } finally { await application.close(); }
+}
+
+async function stopOwnedRestart(executable) {
+  const owned = await ownedProcesses(await windowsSnapshot(), executable);
+  if (!owned.length) return;
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    $owned = @($env:ALLRADIONE_SMOKE_OWN_PROCESSES | ConvertFrom-Json)
+    foreach($entry in $owned) {
+      $current = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$entry.pid) -ErrorAction SilentlyContinue
+      if($current -and $current.ExecutablePath -eq $entry.path) {
+        $p = Get-Process -Id $entry.pid -ErrorAction SilentlyContinue
+        if($p -and $p.MainWindowHandle -ne 0) { $null = $p.CloseMainWindow() }
+      }
+    }
+  `;
+  await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 30000, env: { ...process.env, ALLRADIONE_SMOKE_OWN_PROCESSES: JSON.stringify(owned.map(({ pid, path }) => ({ pid, path }))) } });
+  await poll(async () => (await ownedProcesses(await windowsSnapshot(), executable)).length === 0, 'restarted installed app closes before Playwright relaunch', 30000);
+}
+
+async function exerciseUpdateHandoff({ installer, executable, userData }) {
+  const { makeUpdateScript } = require('../electron/updater.cjs');
+  const updateRoot = path.join(userData, 'updates');
+  await fs.mkdir(updateRoot, { recursive: true });
+  const stage = await fs.mkdtemp(path.join(updateRoot, 'release-smoke-'));
+  const stagedInstaller = path.join(stage, path.basename(installer));
+  const scriptPath = path.join(stage, 'apply-update.ps1');
+  await fs.copyFile(installer, stagedInstaller);
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of createReadStream(stagedInstaller)) hash.update(chunk);
+  const digest = hash.digest('hex');
+
+  // A controlled short-lived process stands in for the old app's PID. Its exit is
+  // released only after checking that the unchanged production handoff is waiting.
+  const oldProcess = spawn(process.execPath, ['-e', "process.stdin.once('data',()=>process.exit(0));setTimeout(()=>process.exit(0),60000)"], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+  await new Promise((resolve, reject) => { oldProcess.once('spawn', resolve); oldProcess.once('error', reject); });
+  const script = makeUpdateScript({ parentPid: oldProcess.pid, installer: stagedInstaller, appExe: executable, scriptPath, expectedHash: digest });
+  assert.match(script, /-ArgumentList @\('\/S', '--updated', '--force-run'\)/, 'Execute the production silent-update and restart flags');
+  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  let finished = false;
+  const handoff = runProcess(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 180000, waitForExit: true })
+    .then(() => ({ ok: true }), error => ({ ok: false, error })).finally(() => { finished = true; });
+  let restartObserved = false;
+  try {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    assert.equal(oldProcess.exitCode, null, 'Controlled old process must still be alive');
+    assert.equal(finished, false, 'Update handoff must wait for the old process');
+    assert.ok(await exists(stagedInstaller), 'Waiting handoff must retain its staged installer');
+    assert.equal((await ownedProcesses(await windowsSnapshot(), executable)).length, 0, 'The app must not restart before the old process exits');
+    oldProcess.stdin.end('exit');
+    await poll(() => oldProcess.exitCode !== null, 'controlled old process exits', 5000);
+
+    await poll(async () => {
+      if (finished) { const result = await handoff; if (!result.ok) throw result.error; }
+      const errorLog = path.join(stage, 'update-error.txt');
+      if (await exists(errorLog)) {
+        const message = (await fs.readFile(errorLog, 'utf8')).replace(/^\uFEFF/, '').slice(0, 4000);
+        await fs.writeFile(path.join(OUTPUT, 'update-handoff-error.txt'), message);
+        throw new Error(`Generated update handoff failed: ${message}`);
+      }
+      const snapshot = await windowsSnapshot();
+      restartObserved ||= (await ownedProcesses(snapshot, executable)).some(process => process.windowHandle !== 0);
+      return restartObserved && !(await exists(stage));
+    }, 'production updater restarts installed app and removes its staging directory', 180000);
+    const result = await handoff;
+    if (!result.ok) throw result.error;
+    assert.equal(await exists(stagedInstaller), false, 'Successful updater must delete its staged installer');
+    assert.equal(await exists(scriptPath), false, 'Successful updater must delete its generated script');
+    await stopOwnedRestart(executable);
+    return { check: 'same-build production PowerShell update handoff waits, reinstalls, restarts and clears staging', passed: true, flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: false };
+  } finally {
+    if (oldProcess.exitCode === null && !oldProcess.stdin.writableEnded) oldProcess.stdin.end('exit');
+    await handoff;
+    // A failed handoff may also restart the original app. Close only this test's exact executable.
+    await stopOwnedRestart(executable).catch(() => {});
+  }
 }
 
 async function main() {
@@ -140,12 +240,12 @@ async function main() {
     assert.ok(await exists(menuShortcut), 'Start menu shortcut must be created');
     const firstInstall = await windowsSnapshot();
     assert.equal(firstInstall.installations.length, 1, 'The installer must register exactly one uninstall entry');
-    assert.ok(firstInstall.shortcutTargets.some(link => sameWindowsPath(link.path, menuShortcut) && sameWindowsPath(link.target, executable)), 'Start menu shortcut must target the installed executable');
+    await assertShortcutTarget(firstInstall, menuShortcut, executable, 'Start menu shortcut must target the installed executable');
     results.push({ check: 'silent per-user install, custom path with spaces and desktop-shortcut opt-out', passed: true });
 
     await withInstalledApp(executable, async (application, page) => {
       const actualData = await application.evaluate(({ app }) => app.getPath('userData'));
-      assert.ok(sameWindowsPath(actualData, userData), 'Installed app must use its genuine per-user application data directory');
+      assert.ok(await sameWindowsFile(actualData, userData), `Installed app must use its genuine data directory: actual=${actualData}, expected=${userData}`);
       assert.equal(await fs.readFile(path.join(actualData, MARKER), 'utf8'), APP_ID, 'App must create the exact ownership marker');
       const migrated = await page.evaluate(() => window.allradione.getPreferences());
       assert.equal(migrated.volume, 0.61, 'Fresh installation must migrate the adjacent portable preferences');
@@ -156,11 +256,11 @@ async function main() {
     });
     results.push({ check: 'fresh installer migrates adjacent portable settings without changing the source', passed: true });
     const beforeUpgrade = await windowsSnapshot();
-    assert.ok(beforeUpgrade.shortcutTargets.some(link => sameWindowsPath(link.path, desktopShortcut) && sameWindowsPath(link.target, executable)), 'Created desktop shortcut must target the actual installed app');
+    await assertShortcutTarget(beforeUpgrade, desktopShortcut, executable, 'Created desktop shortcut must target the actual installed app');
 
-    // Reinstalling the same build executes NSIS's existing-install upgrade/uninstall path.
-    // It verifies preservation through that path without claiming a cross-version update.
-    await runProcess(setupCopy, nsisArguments(installDirectory), { verbatim: true });
+    // Run the exact generated production handoff with the same installer build.
+    // This tests its real Windows behavior without claiming a cross-version update.
+    results.push(await exerciseUpdateHandoff({ installer: setupCopy, executable, userData }));
     await withInstalledApp(executable, async (_application, page) => {
       const preferences = await page.evaluate(() => window.allradione.getPreferences());
       assert.equal(preferences.volume, 0.31, 'Upgrade must preserve volume');
