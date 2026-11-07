@@ -6,7 +6,6 @@ const fs = require('node:fs/promises');
 const { createReadStream, realpath } = require('node:fs');
 const { promisify } = require('node:util');
 const crypto = require('node:crypto');
-const vm = require('node:vm');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
@@ -14,9 +13,9 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
 const MARKER = 'allradione-owner.txt';
-const BASELINE_VERSION = '0.2.0';
-const BASELINE_URL = 'https://github.com/samueltoken/Allradione/releases/download/v0.2.0/Allradione-Setup-0.2.0-x64.exe';
-const BASELINE_SHA256 = '953ad13fe8eacec88498c89df75fb2f7103923a71cc9dd62c1716dff058312ee';
+const BASELINE_VERSION = '0.2.2';
+const BASELINE_URL = `https://github.com/samueltoken/Allradione/releases/download/v${BASELINE_VERSION}/Allradione-Setup-${BASELINE_VERSION}-x64.exe`;
+const BASELINE_SHA256 = 'ab3073deec4d072c5c7ad89b075c01ba4bbc166b6b4eadaf6ae803d251fa81bd';
 const canonicalPath = promisify(realpath.native);
 
 function sameWindowsPath(left, right) {
@@ -154,26 +153,18 @@ function extractInstalledFile(installDirectory, file) {
 }
 
 async function readReleasedUpdater(installDirectory) {
-  const source = extractInstalledFile(installDirectory, 'electron/updater.cjs').toString('utf8');
-  const allowed = new Set(['node:fs/promises', 'node:path', 'node:crypto', 'node:child_process']);
-  const module = { exports: {} };
-  const context = vm.createContext({ module, exports: module.exports, require: name => { assert.ok(allowed.has(name), `Unexpected released updater dependency: ${name}`); return require(name); } });
-  new vm.Script(source, { filename: `released-v${BASELINE_VERSION}-updater.cjs` }).runInContext(context, { timeout: 1000 });
-  assert.equal(typeof module.exports.makeUpdateScript, 'function', 'Released updater must export its real handoff generator');
+  const source = extractInstalledFile(installDirectory, 'electron/updater.cjs');
   await fs.writeFile(path.join(OUTPUT, `released-v${BASELINE_VERSION}-updater.cjs`), source);
+  // Fingerprint the packaged source here; the Settings test loads and executes
+  // it inside the real installed Electron app with its packaged dependencies.
   return {
     source: `released v${BASELINE_VERSION} resources/app.asar`,
     sha256: crypto.createHash('sha256').update(source).digest('hex'),
-    makeUpdateScript(parameters) {
-      context.parameters = parameters;
-      try { return vm.runInContext('module.exports.makeUpdateScript(parameters)', context, { timeout: 1000 }); }
-      finally { delete context.parameters; }
-    },
   };
 }
 
-async function exerciseUpdateHandoff({ installer, executable, userData, fromVersion, toVersion, releasedUpdater }) {
-  const { makeUpdateScript } = releasedUpdater || require('../electron/updater.cjs');
+async function exerciseUpdateHandoff({ installer, executable, userData, fromVersion, toVersion }) {
+  const { makeUpdateScript } = require('../electron/updater.cjs');
   const artifact = name => path.join(OUTPUT, `update-${fromVersion}-to-${toVersion}-${name}`);
   const updateRoot = path.join(userData, 'updates');
   await fs.mkdir(updateRoot, { recursive: true });
@@ -189,7 +180,7 @@ async function exerciseUpdateHandoff({ installer, executable, userData, fromVers
   // released only after checking that the unchanged production handoff is waiting.
   const oldProcess = spawn(process.execPath, ['-e', "process.stdin.once('data',()=>process.exit(0));setTimeout(()=>process.exit(0),60000)"], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
   await new Promise((resolve, reject) => { oldProcess.once('spawn', resolve); oldProcess.once('error', reject); });
-  if (!releasedUpdater) await require('../electron/update-staging.cjs').createStageMarker(stage, { pid: oldProcess.pid, installerName: path.basename(stagedInstaller) });
+  await require('../electron/update-staging.cjs').createStageMarker(stage, { pid: oldProcess.pid, installerName: path.basename(stagedInstaller) });
   const script = makeUpdateScript({ parentPid: oldProcess.pid, installer: stagedInstaller, appExe: executable, scriptPath, expectedHash: digest });
   assert.match(script, /-ArgumentList @\('\/S', '--updated', '--force-run'\)/, 'Execute the production silent-update and restart flags');
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
@@ -236,7 +227,7 @@ async function exerciseUpdateHandoff({ installer, executable, userData, fromVers
     assert.equal(await exists(stagedInstaller), false, 'Successful updater must delete its staged installer');
     assert.equal(await exists(scriptPath), false, 'Successful updater must delete its generated script');
     await stopOwnedRestart(executable);
-    return { check: 'production PowerShell update handoff waits, upgrades, restarts and clears staging', passed: true, fromVersion, toVersion, helperSource: releasedUpdater?.source || 'current source build', helperSourceSha256: releasedUpdater?.sha256, flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: fromVersion !== toVersion };
+    return { check: 'production PowerShell update handoff waits, upgrades, restarts and clears staging', passed: true, fromVersion, toVersion, helperSource: 'current source build', flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: fromVersion !== toVersion };
   } catch (error) {
     let actualHash = null;
     let actualHashError = null;
@@ -573,7 +564,6 @@ async function main() {
   const results = [];
   let installed = false;
   let completed = false;
-  let legacyRecoveryUsed = false;
   let failure;
   const sentinel = { stationuuid: '00000000-0000-4000-8000-000000000099', name: 'Installer upgrade preservation fixture', url: 'https://example.com/no-audio', url_resolved: 'https://example.com/no-audio', homepage: '', favicon: '', countrycode: 'JP', language: '', tags: '', codec: 'MP3', bitrate: 128, hls: 0, lastcheckok: 1, votes: 0 };
   const legacyStation = { ...sentinel, stationuuid: '00000000-0000-4000-8000-000000000098', name: 'Portable migration fixture' };
@@ -648,17 +638,17 @@ async function main() {
     await uninstall();
     assertFreshSnapshot(await windowsSnapshot());
 
-    // Install the real released previous version, not a modified current-build fixture.
+    // Install the retained, SHA256-pinned release as the upgrade baseline.
     await runProcess(baselineInstaller, nsisArguments(installDirectory), { verbatim: true });
     installed = true;
-    assert.ok(await exists(desktopShortcut), 'Released v0.2.0 must provide the legacy owned Desktop shortcut');
+    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'baseline' });
     const baselinePid = await withInstalledApp(executable, async (application, page) => {
-      assert.equal(await page.evaluate(() => window.allradione.version()), BASELINE_VERSION, 'Upgrade baseline must be actual released v0.2.0');
+      assert.equal(await page.evaluate(() => window.allradione.version()), BASELINE_VERSION, `Upgrade baseline must be actual released v${BASELINE_VERSION}`);
       await page.evaluate(station => window.allradione.savePreferences({ volume: 0.31, favorites: [station], widgetEnabled: false, widgetSize: 'medium', reducedMotion: true }), sentinel);
       return application.process().pid;
     });
     const beforeUpgrade = await windowsSnapshot();
-    await assertShortcutTarget(beforeUpgrade, desktopShortcut, executable, 'Created desktop shortcut must target the actual installed app');
+    await assertShortcutTarget(beforeUpgrade, menuShortcut, executable, 'Baseline Start menu shortcut must target the actual installed app');
     const releasedUpdater = await readReleasedUpdater(installDirectory);
     const obsolete = path.join(installDirectory, 'resources', 'obsolete-owned-qa-file.bin');
     await fs.writeFile(obsolete, 'Obsolete fixture only inside this test-owned installation.');
@@ -672,22 +662,14 @@ async function main() {
     await fs.writeFile(path.join(unownedStage, 'keep.txt'), 'Unmarked data must be preserved.');
     await fs.mkdir(unrelatedDirectory);
     await fs.writeFile(path.join(unrelatedDirectory, 'keep.txt'), 'Never follow this junction during uninstall.');
-    try {
-      results.push(await exerciseInstalledAppUpdate({ installer: setupCopy, executable, userData, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, releasedUpdater, legacyDiagnostic: true }));
-    } catch (legacyError) {
-      const diagnostic = legacyError.updateDiagnostic;
-      assert.ok(diagnostic?.trace?.sourceHash === releasedUpdater.sha256 && diagnostic.trace.requests.includes('local built installer stream'), 'Do not classify an unexercised legacy updater or harness error as a migration limitation');
-      assert.equal(diagnostic.helperAlive, false, 'Do not run manual recovery while a legacy update helper is still active');
-      legacyRecoveryUsed = true;
-      console.warn(`LEGACY AUTOMATIC UPDATE FAILED (v${BASELINE_VERSION}): ${legacyError.message}. Testing one-time Setup migration; this is not an automatic-update success.`);
-      results.push({ check: 'released v0.2.0 automatic updater compatibility diagnostic', passed: false, releaseGate: false, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, status: 'legacy-automatic-update-failed', oneTimeManualMigrationRequired: true, error: legacyError.message, helper: diagnostic.trace.helper, helperOutput: diagnostic.helperOutput });
-      // This is explicitly manual recovery with the new Setup, not a repaired old
-      // updater. The strict current-app update gate has already passed above.
-      await runProcess(setupCopy, nsisArguments(installDirectory), { verbatim: true });
-    }
+    // The baseline can equal this build during documentation-only changes.
+    // Adjust only the version comparison in that case; keep the installed
+    // executable, updater, helper handshake and automatic-update gate genuine.
+    const baselineReportedVersion = packageJson.version === BASELINE_VERSION ? reportedCurrentVersion : null;
+    results.push(await exerciseInstalledAppUpdate({ installer: setupCopy, executable, userData, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, releasedUpdater, reportedCurrentVersion: baselineReportedVersion }));
     assert.equal(await exists(obsolete), false, 'Upgrade must remove obsolete files from the installer-owned application directory');
     assert.equal(await fs.readFile(path.join(unrelatedDirectory, 'keep.txt'), 'utf8'), 'Never follow this junction during uninstall.', 'Upgrade must preserve unrelated outside files');
-    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'after-v020-upgrade' });
+    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'after-baseline-upgrade' });
     await withInstalledApp(executable, async (_application, page) => {
       assert.equal(await page.evaluate(() => window.allradione.version()), packageJson.version, 'Upgraded app must report the new version');
       const preferences = await page.evaluate(() => window.allradione.getPreferences());
@@ -700,7 +682,7 @@ async function main() {
       assert.equal(await fs.readFile(path.join(unownedStage, 'keep.txt'), 'utf8'), 'Unmarked data must be preserved.', 'Startup must preserve unmarked legacy update data');
       await page.evaluate(() => window.allradione.savePreferences({ reducedMotion: false }));
     });
-    results.push({ check: legacyRecoveryUsed ? 'one-time Setup migration from real v0.2.0 preserves settings, replaces legacy shortcut and removes obsolete owned files' : 'real released v0.2.0 automatic upgrade preserves settings, replaces legacy shortcut and removes obsolete owned files', mode: legacyRecoveryUsed ? 'one-time-manual-setup' : 'automatic-update', fromVersion: BASELINE_VERSION, toVersion: packageJson.version, passed: true });
+    results.push({ check: 'retained release automatic upgrade preserves settings and launcher and removes obsolete owned files', mode: 'automatic-update', fromVersion: BASELINE_VERSION, toVersion: packageJson.version, crossVersionUpdateTested: BASELINE_VERSION !== packageJson.version, passed: true });
 
     await runProcess(process.execPath, [path.join(ROOT, 'scripts', 'smoke-electron.cjs')], { timeout: 480000, inherit: true, env: { ...process.env, ALLRADIONE_SMOKE_EXECUTABLE: executable, ALLRADIONE_SMOKE_INSTALLED: '1' } });
     results.push({ check: 'full native smoke against the installed executable and genuine installed profile', passed: true });
@@ -715,12 +697,13 @@ async function main() {
       // to conceal an uninstaller failure; the CI machine is disposable and the failure is retained.
       try { await uninstall(); } catch (cleanupError) { results.push({ check: 'cleanup', passed: false, error: cleanupError.message }); }
     }
-    await fs.writeFile(path.join(OUTPUT, 'smoke-installer.json'), JSON.stringify({ passed: completed, version: packageJson.version, legacyAutomaticUpdatePassed: !legacyRecoveryUsed && completed, oneTimeLegacySetupRequired: legacyRecoveryUsed, error: failure?.message, results }, null, 2));
+    await fs.writeFile(path.join(OUTPUT, 'smoke-installer.json'), JSON.stringify({ passed: completed, version: packageJson.version, baselineVersion: BASELINE_VERSION, baselineAutomaticUpdatePassed: completed, crossVersionUpdateTested: BASELINE_VERSION !== packageJson.version, error: failure?.message, results }, null, 2));
     if (!(await exists(installDirectory))) await fs.rm(temporary, { recursive: true, force: true });
   }
   if (failure) throw failure;
-  console.log(`Installer release gates passed: fresh install, current-app automatic update, settings preservation, native UI and uninstall.${legacyRecoveryUsed ? ' Legacy v0.2.0 automatic update FAILED; one-time manual Setup migration passed.' : ' Legacy automatic upgrade also passed.'}`);
+  console.log(`Installer release gates passed: fresh install, current-app automatic update, retained v${BASELINE_VERSION} automatic update, settings preservation, native UI and uninstall.`);
 }
 
 module.exports = { nsisArguments, sameWindowsPath, assertFreshSnapshot, runProcess, extractInstalledFile };
 if (require.main === module) main().catch(error => { console.error('Installer lifecycle smoke failed:', error.message); process.exitCode = 1; });
+

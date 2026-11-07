@@ -1,43 +1,78 @@
-<p align="center"><img src="assets/icon-256.png" width="112" alt="Allradione"></p>
+<p align="center">
+  <img src="assets/icon-256.png" width="96" height="96" alt="Allradione">
+</p>
+
 <h1 align="center">Allradione</h1>
-<p align="center">One world. Always on air.</p>
 
-A Windows internet-radio player with a draggable analog tuner, an interactive 3D globe and transparent desktop widgets. Open source under the MIT license.
+<p align="center"><strong>One world. Always on air.</strong></p>
 
-## Install
+<p align="center">
+  Explore live radio around the world.<br>
+  An analog dial, an interactive globe, and a receiver for your desktop.
+</p>
 
-Download `Allradione-Setup-<version>-x64.exe` from [Releases](https://github.com/samueltoken/Allradione/releases/latest). The setup wizard installs Allradione for the current Windows user and creates a Start menu shortcut and a small `Allradione.exe` launcher on the desktop. The desktop launcher is a real executable, so it has no shortcut-arrow overlay. It opens the installed app and stays valid after updates; Settings can recreate it. Windows 10/11 x64; no separate VLC, web browser or runtime installation is required.
+<p align="center">
+  <a href="https://github.com/samueltoken/Allradione/releases/latest"><strong>Download for Windows</strong></a>
+  &nbsp; · &nbsp;
+  <a href="https://github.com/samueltoken/Allradione/releases">Release notes</a>
+  &nbsp; · &nbsp;
+  <a href="https://github.com/samueltoken/Allradione/issues">Report an issue</a>
+</p>
 
-Version 0.2.0 switches from the previous portable distribution to a Windows installer. Run the new setup once; later versions can be installed from **Settings → Update**. For automatic migration, place Setup beside the old executable's `Allradione-data` folder on the first install. Only settings/favorites are copied when there is no existing installed profile; the original folder remains untouched.
+<p align="center"><sub>WINDOWS 10 / 11 &nbsp; · &nbsp; 64-BIT &nbsp; · &nbsp; OPEN SOURCE</sub></p>
 
-## Listen
+---
 
-- Drag the globe to rotate and scroll to zoom, then select a country. Country search also works without WebGL. Bundled flag images appear throughout the country views.
-- Search the station list, save favorites, or revisit recent stations.
-- Turn the circular dial by dragging. The needle follows the pointer; the station changes when you release it. Mouse wheel and arrow keys also tune stations. Internet-only stations are labeled without inventing an FM frequency.
-- Settings enables a **small circular** or **medium receiver** desktop widget. Both have transparent outer backgrounds and sit at the lower-right above ordinary windows. Closing the main window with a widget enabled keeps playback running. Reopen the app from its widget or tray, or choose **Quit** in the tray to exit.
-- The waveform uses the actual audio signal with logarithmic frequency bands, adaptive gain and fast attack/release. The occupied frequency range spans the entire display, including bandwidth-limited radio streams. The medium receiver combines a black instrument face, a rounded metal rim, a large live volume readout and a curved volume scale. The circular widget responds through arc speed, thickness and glow. Silent, muted or paused streams do not produce fake activity. Reduced motion and a sleep timer are available.
-- The interface bundles Sora, Pretendard and IBM Plex Mono fonts for consistent English and Korean typography.
+## Radio, at your pace
 
-## Updates, cache and removal
+| Explore | Tune | Keep listening |
+| :--- | :--- | :--- |
+| Rotate the 3D globe or search by country to discover live stations. | Drag the analog dial, scroll, or use the arrow keys to change stations. | Keep a transparent circular or receiver widget on your desktop. |
 
-**Settings → Update** checks this repository's latest stable release. Downloads must pass SHA-256 verification before the setup process runs. The installer updates the existing installation and preserves preferences, favorites and recent stations. The app restarts after a successful installed update. Obsolete program files are replaced during installation, owned desktop launchers are refreshed, and completed update staging files are removed. On version changes, compiled-code caches are refreshed without discarding listening preferences or the station directory. Interrupted, marked update staging folders are cleaned only after 24 hours and after their owning process has exited. Unrelated files are never used as cleanup targets.
+- **Your stations.** Search the directory, save favorites, and return to recent listening.
+- **Sound in motion.** Visualizers respond to the actual audio signal and settle when playback is silent.
+- **A considered interface.** Sora, Pretendard, and IBM Plex Mono pair clear typography with an instrument-inspired layout.
+- **Everyday controls.** Volume, sleep timer, reduced motion, and in-app updates.
 
-From 0.2.2, installing refreshes the release metadata so an earlier check cannot retain a missing or withdrawn installer. Releases become public only after the Windows checks pass and both the installer and checksum finish uploading. If a newer release is still preparing its installer, Settings offers a recheck instead of opening a download page.
+## Start listening
 
-If an older app closes without installing the update, run the 0.2.2 Setup once over the existing installation. Publishing a new installer cannot repair an old updater that stops before running it. The 0.2.2 updater waits for its helper's verified readiness before closing and verifies restart using canonical Windows file paths.
+1. Download `Allradione-Setup-<version>-x64.exe` from the [latest release](https://github.com/samueltoken/Allradione/releases/latest).
+2. Run Setup, then open Allradione from the desktop or Start menu.
+3. Select a country and a station. Enable a desktop widget in **Settings** to keep listening with the main window closed.
 
-**Settings → Cache** shows cache usage and clears this app's network, compiled-code and station-directory caches. Favorites, preferences and unrelated files are retained. The result reports any cache that could not be removed; live playback remains available.
+Windows 10/11 x64 and an internet connection are required. No account or separate media player is needed.
 
-Use Windows **Installed apps → Allradione → Uninstall** to remove the installed application, its desktop launcher, Start menu shortcut and application-owned settings/cache data. Upgrade installation preserves that data. Data folders beside an old portable executable and downloaded installer files are not part of the installed application's files.
+## Stay up to date
 
-## Data and network
+Open **Settings → Update** to download, verify, and install the latest stable version. Allradione restarts after installation and retains settings, favorites, and recent stations. Downloads are verified with SHA-256.
 
-Radio Browser supplies the station directory. Audio comes from the selected broadcaster through an internal loopback proxy, which handles mixed stream formats and visualizer access. The proxy uses a random port and token and does not relay audio to other listeners. No account, telemetry or application server is required. Selecting a station submits its ID to Radio Browser's public click counter as requested by its API guidelines.
+**Moving from an older version?** If an update closes the app without installing, run the [latest Setup](https://github.com/samueltoken/Allradione/releases/latest) once over the existing installation. No uninstall is required.
 
-Availability depends on the station, network and region. Some domestic Japanese and other services restrict overseas access. No geographic or subscription bypass, recording or rebroadcasting is included. A normal topmost window cannot cover the Windows secure desktop/UAC screen or guarantee display over every exclusive fullscreen game.
+<details>
+<summary><strong>Installation, widgets &amp; cleanup</strong></summary>
 
-## Develop
+- Setup installs for the current Windows user and creates a Start menu shortcut and a desktop `Allradione.exe` launcher. The launcher continues to work after updates.
+- With a widget enabled, closing the main window keeps playback running. Reopen Allradione from the widget or tray; choose **Quit** in the tray to exit.
+- **Settings → Cache** clears app caches while preserving preferences and favorites.
+- Updates replace obsolete application files and remove completed update staging files. Unrelated files are preserved.
+- Windows **Installed apps → Allradione → Uninstall** removes the installed app, its launchers, and application-owned settings and caches.
+- To migrate from a portable version, place Setup beside the old `Allradione-data` folder before the first installation. Settings and favorites are imported only when no installed profile exists. The original portable folder and downloaded installers remain separate.
+
+</details>
+
+<details>
+<summary><strong>Station data &amp; privacy</strong></summary>
+
+[Radio Browser](https://www.radio-browser.info/) provides the station directory; audio comes from each broadcaster. Allradione uses a local, token-protected audio proxy for playback and visualization. It does not relay streams to other listeners.
+
+No account, telemetry, or application server is required. Selecting a station submits its ID to Radio Browser's public click counter.
+
+Station availability depends on the broadcaster, network, and region. Recording, rebroadcasting, and geographic or subscription bypass are not included. Desktop widgets may not appear above exclusive fullscreen games or Windows security screens.
+
+</details>
+
+<details>
+<summary><strong>Development &amp; builds</strong></summary>
 
 Requires Node.js 22+.
 
@@ -48,16 +83,21 @@ npm run build
 npm start
 ```
 
-For renderer development, run `npm run dev`, then launch Electron with `ALLRADIONE_DEV_URL=http://localhost:5173`. The browser-only preview cannot create native widgets, create a Windows desktop launcher or install updates.
+For renderer development, run `npm run dev`, then launch Electron with `ALLRADIONE_DEV_URL=http://localhost:5173`. Native widgets, desktop launchers, and update installation require Electron.
+
+Build the Windows installer with Visual Studio C++ Build Tools and the Windows SDK:
 
 ```sh
 npm run dist:win
 ```
 
-Build on Windows with the Visual Studio C++ build tools and Windows SDK; the desktop launcher is compiled with the static runtime and needs no separately installed runtime. GitHub Actions verifies audio decoding, actual widget corner transparency, dial interactions, fonts and flags, cache preservation, install/upgrade/uninstall behavior (including a SHA-256-pinned v0.2.0 to current-version upgrade), then produces the NSIS setup executable and `SHA256SUMS.txt`. Live station playback is probed separately because broadcaster availability is external.
+GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.2 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
 
-To release, increment `package.json` and the lockfile, commit and publish a matching `v<version>` GitHub release. The release workflow tests the version and attaches the Windows setup and checksums. Resolve any failing workflow before distributing the release.
+For a release, update the package version and lockfile, add notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow validates the build and publishes the installer with `SHA256SUMS.txt` after all checks pass.
 
-## License
+</details>
 
-MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Radio station logos and broadcast content retain their original ownership.
+---
+
+[MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)  
+Station logos and broadcast content belong to their respective owners.
