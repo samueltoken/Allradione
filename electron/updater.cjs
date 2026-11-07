@@ -115,7 +115,17 @@ $stageDir = Split-Path -Parent $installer
 $expected = ${psLiteral(expectedHash.toLowerCase())}
 $installed = $false
 try {
-  if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA256 mismatch' }
+  # Use .NET directly: inherited PSModulePath can hide Get-FileHash in Windows PowerShell.
+  $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+  $installerStream = $null
+  try {
+    $installerStream = [System.IO.File]::OpenRead($installer)
+    $actualHash = ([System.BitConverter]::ToString($hashAlgorithm.ComputeHash($installerStream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    if ($installerStream) { $installerStream.Dispose() }
+    $hashAlgorithm.Dispose()
+  }
+  if ($actualHash -ne $expected) { throw 'SHA256 mismatch' }
   Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
   if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
   $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -ErrorAction Stop

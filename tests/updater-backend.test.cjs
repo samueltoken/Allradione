@@ -71,7 +71,7 @@ test('updater script waits for clean exit and delegates replacement/restart to N
   assert.throws(() => makeUpdateScript({ parentPid: '1;evil', expectedHash: hash }));
 });
 
-test('Windows PowerShell executes the generated encoded helper and records a missing installer safely', { skip: process.platform !== 'win32', timeout: 25000 }, async t => {
+test('Windows PowerShell executes the generated encoded helper and safely rejects missing or corrupt installers', { skip: process.platform !== 'win32', timeout: 40000 }, async t => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-powershell-test-'));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
   const stage = path.join(temporary, "O'Brien 한글");
@@ -83,14 +83,25 @@ test('Windows PowerShell executes the generated encoded helper and records a mis
   const script = makeUpdateScript({ parentPid: process.pid, installer, appExe: path.join(stage, 'nonexistent-app.exe'), scriptPath, expectedHash: hash });
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
   const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  try {
-    await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
-  } catch (error) {
-    assert.fail(`Generated PowerShell helper failed to execute: ${error.message}\nstdout: ${error.stdout || ''}\nstderr: ${error.stderr || ''}`);
-  }
+  const execute = async () => {
+    try {
+      await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
+    } catch (error) {
+      assert.fail(`Generated PowerShell helper failed to execute: ${error.message}\nstdout: ${error.stdout || ''}\nstderr: ${error.stderr || ''}`);
+    }
+  };
+  await execute();
   const errorLog = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8');
   assert.match(errorLog, /missing-setup\.exe/, 'The catch branch must record the missing installer, rather than fail to parse');
   await assert.rejects(fs.access(scriptPath), { code: 'ENOENT' }, 'The generated helper must clean up its own script');
+  assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
+  // A present file exercises .NET streaming SHA256 before the controlled parent wait.
+  await fs.writeFile(installer, 'MZ deliberately incorrect installer bytes');
+  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
+  await execute();
+  assert.match(await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8'), /SHA256 mismatch/);
+  await assert.rejects(fs.access(installer), { code: 'ENOENT' });
+  await assert.rejects(fs.access(scriptPath), { code: 'ENOENT' });
   assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
 });
 
