@@ -3,6 +3,7 @@ const dns=require('node:dns').promises;
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {fetchJson}=require('./network.cjs');
+const {metadataFiles}=require('./cache.cjs');
 function cleanStation(s) {
   if(!s||typeof s.stationuuid!=='string'||typeof s.name!=='string')return null;
   const result={};
@@ -15,6 +16,8 @@ function createRadio(dataDir) {
   let servers=['https://de1.api.radio-browser.info','https://nl1.api.radio-browser.info'];
   let discovery;
   const cache=new Map();
+  let generation=0, diskQueue=Promise.resolve();
+  const scheduleDisk=operation=>(diskQueue=diskQueue.catch(()=>{}).then(operation));
   async function discover(){
     if(!discovery) discovery=(async()=>{
       try{
@@ -32,11 +35,12 @@ function createRadio(dataDir) {
   }
   async function cached(key,endpoint,transform,ttl){
     const entry=cache.get(key);if(entry&&Date.now()-entry.time<ttl)return entry.data;
-    const file=path.join(dataDir,`cache-${key}.json`);
-    try{const raw=await request(endpoint);const data=transform(raw);const saved={time:Date.now(),data};cache.set(key,saved);await fs.writeFile(file,JSON.stringify(saved)).catch(()=>{});return data;}
-    catch(error){if(entry)return entry.data;try{const saved=JSON.parse(await fs.readFile(file,'utf8'));if(Array.isArray(saved.data)){cache.set(key,saved);return saved.data;}}catch{}throw error;}
+    const file=path.join(dataDir,`cache-${key}.json`),requestGeneration=generation;
+    try{const raw=await request(endpoint);const data=transform(raw);const saved={time:Date.now(),data};if(requestGeneration===generation){cache.set(key,saved);await scheduleDisk(async()=>{if(requestGeneration===generation)await fs.writeFile(file,JSON.stringify(saved));}).catch(()=>{});}return data;}
+    catch(error){if(entry)return entry.data;try{const saved=JSON.parse(await fs.readFile(file,'utf8'));if(Array.isArray(saved.data)&&requestGeneration===generation){cache.set(key,saved);return saved.data;}}catch{}throw error;}
   }
   return {
+    clearCache:()=>{generation++;cache.clear();return scheduleDisk(async()=>{const failures=[];for(const file of await metadataFiles(dataDir)){try{await fs.unlink(file);}catch(error){if(error.code!=='ENOENT')failures.push(error);}}if(failures.length)throw new Error('Some station cache files could not be removed');});},
     countries:()=>cached('countries','/json/countrycodes?order=stationcount&reverse=true',rows=>{
       const names=new Intl.DisplayNames(['ko'],{type:'region'});
       return rows.filter(s=>/^[A-Z]{2}$/.test(s.name)).map(s=>({code:s.name,name:names.of(s.name)||s.name,stationcount:Number(s.stationcount)||0}));

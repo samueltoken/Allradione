@@ -9,7 +9,10 @@ Allradione's application source is MIT licensed. Dependencies retain their own l
 - topojson-client: ISC. https://github.com/topojson/topojson-client
 - world-atlas: ISC; derived from Natural Earth public-domain geographic data. https://github.com/topojson/world-atlas and https://www.naturalearthdata.com/about/terms-of-use/
 - i18n-iso-countries: MIT. https://github.com/michaelwittig/node-i18n-iso-countries
-- Manrope font: SIL Open Font License 1.1. https://github.com/sharanda/manrope
+- Sora font: SIL Open Font License 1.1. https://github.com/sora-xor/sora-font
+- Pretendard font: SIL Open Font License 1.1. https://github.com/orioncactus/pretendard
+- IBM Plex Mono font: SIL Open Font License 1.1. https://github.com/IBM/plex
+- flag-icons: MIT. Bundled SVG flags. https://github.com/lipis/flag-icons
 - Radio Browser directory: public-domain station metadata; API freely available without availability guarantees. https://www.radio-browser.info/ and https://api.radio-browser.info/
 
 Station names, logos, streams, broadcasts and music belong to their respective owners. Listing a station does not imply endorsement or grant rights to rebroadcast or redistribute its audio. Allradione connects directly to the stream selected by the listener; it does not operate an audio redistribution server.

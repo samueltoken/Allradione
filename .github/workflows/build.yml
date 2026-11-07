@@ -9,6 +9,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,10 +24,12 @@ jobs:
       - run: npm run dist:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-      - name: Verify packaged Windows app
-        run: npm run test:native
-        env:
-          ALLRADIONE_SMOKE_EXECUTABLE: release/win-unpacked/Allradione.exe
+      - name: Verify install, upgrade and complete removal
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $env:ALLRADIONE_SMOKE_INSTALLER = "release/Allradione-Setup-$version-x64.exe"
+          npm run test:installer
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -36,7 +39,7 @@ jobs:
       - name: Write SHA256 checksums
         shell: pwsh
         run: |
-          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe','.zip' } | ForEach-Object {
+          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe' } | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
           } | Set-Content release/SHA256SUMS.txt -Encoding utf8NoBOM
@@ -45,6 +48,5 @@ jobs:
           name: Allradione-Windows
           path: |
             release/*.exe
-            release/*.zip
             release/SHA256SUMS.txt
           retention-days: 14

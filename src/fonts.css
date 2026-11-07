@@ -1,1 +1,11 @@
-/* Uses locally installed Windows/system fonts; the app has no external font requests. */
+@import '@fontsource-variable/sora';
+@import 'pretendard/dist/web/variable/pretendardvariable.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+
+/* Bundled OFL fonts; no remote font requests or system-font dependency. */
+:root {
+  --font-ui: 'Sora Variable', 'Pretendard Variable', sans-serif;
+  --font-display: 'Sora Variable', 'Pretendard Variable', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Pretendard Variable', monospace;
+}

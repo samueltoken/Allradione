@@ -3,7 +3,9 @@ export interface Country { code:string; name:string; stationcount:number; lat?:n
 export type WidgetSize = 'small' | 'medium';
 export interface Preferences { volume:number; favorites:Station[]; recent:Station[]; widgetEnabled:boolean; widgetSize:WidgetSize; lastCountry:string; reducedMotion:boolean; }
 export interface PlayerState { station:Station|null; playing:boolean; status:'idle'|'connecting'|'playing'|'paused'|'error'; volume:number; error?:string; spectrum?:number[]; }
-export interface UpdateInfo { available:boolean; version:string; currentVersion:string; url:string; assetUrl?:string; assetName?:string; digest?:string; message?:string; }
+export interface UpdateInfo { available:boolean; version:string; currentVersion:string; url:string; assetUrl?:string; assetName?:string; digest?:string; message?:string; mode?:'installer'|'portable'|'development'; }
+export interface CacheInfo { httpBytes:number|null; metadataBytes:number; codeBytes:number; totalBytes:number; errors:string[]; }
+export interface CacheResult { beforeBytes:number; afterBytes:number; freedBytes:number; errors:string[]; }
 export interface AllradioneBridge {
  getPreferences():Promise<Preferences>; savePreferences(patch:Partial<Preferences>):Promise<Preferences>;
  countries():Promise<Country[]>; stations(code:string):Promise<Station[]>;
@@ -13,6 +15,8 @@ export interface AllradioneBridge {
  sendCommand(command:string,value?:unknown):void; onCommand(fn:(command:string,value?:unknown)=>void):()=>void;
  windowAction(action:'minimize'|'maximize'|'close'|'show'):void;
  checkUpdate():Promise<UpdateInfo>; installUpdate():Promise<{message:string}>;
+ cacheInfo():Promise<CacheInfo>; clearCache():Promise<CacheResult>;
+ createDesktopShortcut():Promise<{created:boolean;message:string}>;
  openExternal(url:string):Promise<void>; version():Promise<string>;
 }
 declare global { interface Window { allradione?:AllradioneBridge; } }

@@ -40,7 +40,7 @@ function allowedAssetUrl(value, tag, fileName) {
 function selectAsset(release) {
   const version = parseVersion(release?.tag_name);
   if (!version || release.draft || release.prerelease || !Array.isArray(release.assets)) return null;
-  const name = `Allradione-${version.join('.')}-win-x64.exe`;
+  const name = `Allradione-Setup-${version.join('.')}-x64.exe`;
   return release.assets.find(asset => asset.name === name && allowedAssetUrl(asset.browser_download_url, release.tag_name, name)) || null;
 }
 
@@ -103,56 +103,43 @@ async function readLimited(response, limit) {
 
 function psLiteral(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 
-function makeUpdateScript({ parentPid, target, stagedExe, backup, scriptPath, expectedHash }) {
+function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHash }) {
   if (!Number.isSafeInteger(parentPid) || parentPid < 1 || !normalizeDigest(expectedHash)) throw new Error('Invalid updater parameters');
+  // The signed-in user's NSIS installer owns file replacement, registration and restart.
+  // These switches are defined by electron-builder's NsisTarget and installSection.nsh.
   return `$ErrorActionPreference = 'Stop'
-$target = ${psLiteral(target)}
-$staged = ${psLiteral(stagedExe)}
-$backup = ${psLiteral(backup)}
+$installer = ${psLiteral(installer)}
+$appExe = ${psLiteral(appExe)}
 $scriptPath = ${psLiteral(scriptPath)}
-$stageDir = Split-Path -Parent $staged
+$stageDir = Split-Path -Parent $installer
 $expected = ${psLiteral(expectedHash.toLowerCase())}
-$moved = $false
 $installed = $false
 try {
-  if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA256 mismatch' }
+  if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA256 mismatch' }
   Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
   if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
-  for ($attempt = 0; $attempt -lt 100; $attempt++) {
-    try {
-      Move-Item -LiteralPath $target -Destination $backup -ErrorAction Stop
-      $moved = $true
-      break
-    } catch { Start-Sleep -Milliseconds 300 }
-  }
-  if (-not $moved) { throw 'Could not replace portable executable' }
-  Copy-Item -LiteralPath $staged -Destination $target -ErrorAction Stop
-  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Installed SHA256 mismatch' }
-  $next = Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target) -PassThru -ErrorAction Stop
-  Start-Sleep -Seconds 3
-  if ($next.HasExited -and $next.ExitCode -ne 0) { throw 'New version failed to start' }
+  $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -Wait -ErrorAction Stop
+  if ($setup.ExitCode -ne 0) { throw ('Installer failed or was canceled. Exit code: ' + $setup.ExitCode) }
   $installed = $true
-  Remove-Item -LiteralPath $backup -ErrorAction SilentlyContinue
 } catch {
   $_ | Out-String | Set-Content -LiteralPath (Join-Path $stageDir 'update-error.txt') -Encoding UTF8
-  if ($moved -and -not $installed -and (Test-Path -LiteralPath $backup)) {
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -ErrorAction SilentlyContinue }
-    Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
-    Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target) -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $appExe) {
+    Start-Process -FilePath $appExe -WorkingDirectory (Split-Path -Parent $appExe) -ErrorAction SilentlyContinue
   }
 } finally {
-  Remove-Item -LiteralPath $staged -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $installer -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
   if ($installed) { Remove-Item -LiteralPath $stageDir -ErrorAction SilentlyContinue }
 }
 `;
 }
 
-function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn }) {
+function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn, scheduleQuit = callback => setTimeout(callback, 400) }) {
   let checked = null;
   let installing = false;
   const currentVersion = app.getVersion();
-  const result = (patch = {}) => ({ available: false, version: currentVersion, currentVersion, url: RELEASES_URL, ...patch });
+  const mode = platform === 'win32' && app.isPackaged ? (env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'installer') : 'development';
+  const result = (patch = {}) => ({ available: false, version: currentVersion, currentVersion, url: RELEASES_URL, mode, ...patch });
 
   async function checkUpdate() {
     checked = null;
@@ -184,14 +171,12 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
         if (!state.available) return { message: state.message || '업데이트가 없어.' };
       }
       const { release, asset, url } = checked;
-      const portablePath = env.PORTABLE_EXECUTABLE_FILE;
-      if (platform !== 'win32' || !asset || !portablePath || path.win32.extname(portablePath).toLowerCase() !== '.exe' || !path.win32.isAbsolute(portablePath)) {
+      if (platform !== 'win32' || !asset || !app.isPackaged || env.PORTABLE_EXECUTABLE_FILE) {
         await shell.openExternal(url);
-        return { message: '릴리즈 페이지를 열었어. 새 무설치 파일을 내려받아 실행해줘.' };
+        return { message: '릴리즈 페이지를 열었어. 새 설치 파일을 내려받아 실행해줘.' };
       }
-      // The existing launcher is the sole replacement target; renderer input cannot choose paths.
-      const targetStat = await fs.stat(portablePath);
-      if (!targetStat.isFile()) throw new Error('현재 무설치 실행 파일을 찾지 못했어.');
+      const appExe = app.getPath('exe');
+      if (!path.win32.isAbsolute(appExe) || path.win32.extname(appExe).toLowerCase() !== '.exe') throw new Error('현재 앱 실행 경로를 확인하지 못했어.');
       let digest = normalizeDigest(asset.digest);
       if (!digest) {
         const checksum = release.assets.find(item => item.name === 'SHA256SUMS.txt' && allowedAssetUrl(item.browser_download_url, release.tag_name, item.name));
@@ -203,7 +188,7 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       const updateRoot = path.join(dataDir, 'updates');
       await fs.mkdir(updateRoot, { recursive: true });
       stageDir = await fs.mkdtemp(path.join(updateRoot, 'release-'));
-      const stagedExe = path.join(stageDir, 'Allradione-update.exe');
+      const stagedExe = path.join(stageDir, asset.name);
       const response = await fetchResponse(asset.browser_download_url, { fetchImpl, signal: AbortSignal.timeout(10 * 60 * 1000) });
       if (!response.ok || !response.body) throw new Error(`다운로드 오류 (${response.status}).`);
       const declared = Number(response.headers.get('content-length'));
@@ -224,9 +209,8 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       } finally { await handle.close(); }
       if (bytes < 1024 || magic.toString('ascii') !== 'MZ') throw new Error('정상적인 Windows 실행 파일이 아니야.');
       if (hash.digest('hex') !== digest) throw new Error('다운로드 파일의 체크섬이 일치하지 않아.');
-      const backup = `${portablePath}.allradione-${crypto.randomUUID()}.bak`;
       const scriptPath = path.join(stageDir, 'apply-update.ps1');
-      const script = makeUpdateScript({ parentPid: process.pid, target: portablePath, stagedExe, backup, scriptPath, expectedHash: digest });
+      const script = makeUpdateScript({ parentPid: process.pid, installer: stagedExe, appExe, scriptPath, expectedHash: digest });
       await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
       const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
       const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -235,8 +219,8 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       child.unref();
       handedOff = true;
-      setTimeout(() => app.quit(), 400);
-      return { message: '검증 완료. 새 버전으로 다시 시작할게.' };
+      scheduleQuit(() => app.quit());
+      return { message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' };
     } catch (error) {
       // Only our unique staging directory is removed. Existing app/settings stay intact.
       if (stageDir) await fs.rm(stageDir, { recursive: true, force: true }).catch(() => {});

@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('allradione',{
  windowAction:action=>ipcRenderer.send('window:action',action),
  checkUpdate:()=>ipcRenderer.invoke('update:check'),
  installUpdate:()=>ipcRenderer.invoke('update:install'),
+ cacheInfo:()=>ipcRenderer.invoke('cache:info'),
+ clearCache:()=>ipcRenderer.invoke('cache:clear'),
+ createDesktopShortcut:()=>ipcRenderer.invoke('desktop:shortcut'),
  openExternal:url=>ipcRenderer.invoke('external:open',url),
  version:()=>ipcRenderer.invoke('app:version')
 });

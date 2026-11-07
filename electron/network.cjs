@@ -3,6 +3,7 @@ const dns = require('node:dns').promises;
 const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
+const APP_VERSION = require('../package.json').version;
 
 function isPublicAddress(address) {
   if (net.isIPv4(address)) {
@@ -35,7 +36,7 @@ async function requestPublic(raw, {headers={}, redirects=6, timeout=15000, signa
   const url=validateUrl(raw), address=await publicLookup(url.hostname);
   return new Promise((resolve,reject)=>{
     const transport=url.protocol==='https:'?https:http;
-    const req=transport.get(url,{headers:{'User-Agent':'Allradione/0.1.0',...headers},lookup:(_host,opts,cb)=>opts?.all?cb(null,[address]):cb(null,address.address,address.family),signal},res=>{
+    const req=transport.get(url,{headers:{'User-Agent':`Allradione/${APP_VERSION}`,...headers},lookup:(_host,opts,cb)=>opts?.all?cb(null,[address]):cb(null,address.address,address.family),signal},res=>{
       clearTimeout(timer);
       if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
         res.resume();

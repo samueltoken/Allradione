@@ -1,4 +1,5 @@
 import Hls from 'hls.js';
+import { RadioSpectrum } from './spectrum';
 import type { AllradioneBridge, PlayerState, Station } from './types';
 
 /** One playback owner lives in the main renderer, even while its window is hidden. */
@@ -8,7 +9,10 @@ export class RadioPlayer {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private source: MediaElementAudioSourceNode | null = null;
-  private frequencyData: Uint8Array<ArrayBuffer> | null = null;
+  private frequencyData: Float32Array<ArrayBuffer> | null = null;
+  private timeData: Float32Array<ArrayBuffer> | null = null;
+  private spectrum: RadioSpectrum | null = null;
+  private spectrumSampleTime = 0;
   private generation = 0;
   private attempt = 0;
   private retryCount = 0;
@@ -84,10 +88,12 @@ export class RadioPlayer {
   setVisualizing(enabled: boolean): void {
     this.visualizing = enabled;
     if (enabled && !this.spectrumTimer) {
-      this.spectrumTimer = setInterval(() => this.sampleSpectrum(), 100);
+      this.spectrumSampleTime = 0;
+      this.spectrumTimer = setInterval(() => this.sampleSpectrum(), 50);
     } else if (!enabled && this.spectrumTimer) {
       clearInterval(this.spectrumTimer);
       this.spectrumTimer = null;
+      this.spectrum?.reset();
       if (this.snapshot.spectrum) {
         this.snapshot.spectrum = undefined;
         this.emit();
@@ -257,6 +263,8 @@ export class RadioPlayer {
 
   private disposeConnection(): void {
     this.active = false;
+    this.spectrum?.reset();
+    this.spectrumSampleTime = 0;
     this.clearDeadline();
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
@@ -272,9 +280,11 @@ export class RadioPlayer {
       try {
         this.context = new AudioContext();
         this.analyser = this.context.createAnalyser();
-        this.analyser.fftSize = 256;
-        this.analyser.smoothingTimeConstant = 0.72;
-        this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
+        this.analyser.fftSize = 2048;
+        this.analyser.smoothingTimeConstant = 0.15;
+        this.frequencyData = new Float32Array(this.analyser.frequencyBinCount);
+        this.timeData = new Float32Array(this.analyser.fftSize);
+        this.spectrum = new RadioSpectrum(this.context.sampleRate, this.analyser.fftSize);
         this.source = this.context.createMediaElementSource(this.audio);
         this.source.connect(this.analyser);
         this.analyser.connect(this.context.destination);
@@ -282,6 +292,8 @@ export class RadioPlayer {
         // Visualization is optional; an unavailable Web Audio API must not fail radio playback.
         this.analyser = null;
         this.frequencyData = null;
+        this.timeData = null;
+        this.spectrum = null;
       }
     }
     if (this.context?.state === 'suspended') {
@@ -290,18 +302,16 @@ export class RadioPlayer {
   }
 
   private sampleSpectrum(): void {
-    if (!this.visualizing || !this.snapshot.playing || !this.analyser || !this.frequencyData) return;
-    this.analyser.getByteFrequencyData(this.frequencyData);
-    const count = 32;
-    const result: number[] = [];
-    for (let band = 0; band < count; band += 1) {
-      const start = Math.floor(Math.pow(band / count, 1.55) * this.frequencyData.length);
-      const end = Math.max(start + 1, Math.floor(Math.pow((band + 1) / count, 1.55) * this.frequencyData.length));
-      let sum = 0;
-      for (let bin = start; bin < end; bin += 1) sum += this.frequencyData[bin] ?? 0;
-      result.push(Number((sum / (end - start) / 255).toFixed(3)));
-    }
-    this.snapshot.spectrum = result;
+    if (!this.visualizing || !this.snapshot.playing || !this.analyser || !this.frequencyData || !this.timeData || !this.spectrum) return;
+    this.analyser.getFloatFrequencyData(this.frequencyData);
+    this.analyser.getFloatTimeDomainData(this.timeData);
+    let sumSquares = 0;
+    for (let index = 0; index < this.timeData.length; index += 1) sumSquares += this.timeData[index] ** 2;
+    const rms = Math.sqrt(sumSquares / this.timeData.length);
+    const now = performance.now();
+    const elapsed = this.spectrumSampleTime ? now - this.spectrumSampleTime : 50;
+    this.spectrumSampleTime = now;
+    this.snapshot.spectrum = this.spectrum.process(this.frequencyData, rms, elapsed);
     this.emit();
   }
 

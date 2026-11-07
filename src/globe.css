@@ -2,9 +2,11 @@
 .radio-globe canvas { display:block; width:100%; height:100%; outline:none; cursor:grab; touch-action:none; }
 .radio-globe canvas:active { cursor:grabbing; }
 .radio-globe canvas:focus-visible { outline:1px solid #f4ecd6; outline-offset:-8px; border-radius:24px; }
-.globe-tooltip { position:absolute; left:50%; bottom:6%; transform:translateX(-50%); border:1px solid #f6f1d530; border-radius:999px; background:#171411ee; color:#f5f0d7; padding:9px 16px; font-size:12px; font-weight:500; white-space:nowrap; opacity:0; pointer-events:none; transition:opacity .18s; box-shadow:0 6px 28px #0005; z-index:2; }
+.globe-tooltip { position:absolute; left:50%; bottom:6%; display:flex; align-items:center; gap:9px; transform:translateX(-50%); border:1px solid #f6f1d530; border-radius:999px; background:#171411ee; color:#f5f0d7; padding:9px 16px; font-family:var(--font-ui,sans-serif); font-size:12px; font-weight:500; white-space:nowrap; opacity:0; pointer-events:none; transition:opacity .18s; box-shadow:0 6px 28px #0005; z-index:2; }
 .globe-tooltip.is-visible { opacity:1; }
-.globe-tooltip span { color:#dcb39a; margin-left:9px; font-size:11px; }
+.globe-tooltip-flag { width:24px; height:18px; object-fit:contain; flex:none; }
+.globe-tooltip-name { color:#f5f0d7; }
+.globe-tooltip-count { color:#dcb39a; font-family:var(--font-mono,monospace); font-size:11px; }
 .globe-fallback { width:72%; aspect-ratio:1; max-width:520px; border-radius:50%; margin:7% auto; background:radial-gradient(circle at 30% 27%, #fb6744, #f34029 45%, #782a20 80%, #251613); box-shadow:inset -35px -20px 50px #100c0877,0 0 0 18px #ef392918,0 0 0 44px #ef39290b; display:flex; align-items:center; justify-content:center; }
 .globe-fallback p { color:#fff2d5; text-align:center; font-size:13px; max-width:180px; line-height:1.7; }
 @media(prefers-reduced-motion:reduce){.globe-tooltip{transition:none}}

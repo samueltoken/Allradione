@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example v0.1.0)
+        description: Existing release tag (for example v0.2.0)
         required: true
         type: string
 permissions:
@@ -13,6 +13,7 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,10 +37,12 @@ jobs:
       - run: npm run dist:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-      - name: Verify packaged Windows app
-        run: npm run test:native
-        env:
-          ALLRADIONE_SMOKE_EXECUTABLE: release/win-unpacked/Allradione.exe
+      - name: Verify install, upgrade and complete removal
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $env:ALLRADIONE_SMOKE_INSTALLER = "release/Allradione-Setup-$version-x64.exe"
+          npm run test:installer
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,7 +55,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          $assets = Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe','.zip' }
+          $assets = Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe' }
           $assets | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"

@@ -23,8 +23,11 @@ export const bridge:AllradioneBridge = window.allradione || {
  sendCommand(command,value){channels.postMessage({kind:'command',command,value});},
  onCommand(fn){const listener=(event:MessageEvent)=>{if(event.data?.kind==='command')fn(event.data.command,event.data.value);};channels.addEventListener('message',listener);return()=>channels.removeEventListener('message',listener);},
  windowAction(action){if(action==='close')window.close();if(action==='show')window.focus();},
- async checkUpdate(){const response=await fetch('https://api.github.com/repos/samueltoken/Allradione/releases/latest',{signal:AbortSignal.timeout(10000)});if(response.status===404)return {available:false,currentVersion:'0.1.0',version:'0.1.0',url:'https://github.com/samueltoken/Allradione/releases',message:'아직 새 릴리즈가 없어.'};if(!response.ok)throw new Error('업데이트 정보를 불러올 수 없어.');const release=await response.json();update={available:release.tag_name.replace(/^v/,'')!=='0.1.0',currentVersion:'0.1.0',version:release.tag_name.replace(/^v/,''),url:release.html_url};return update;},
+ async checkUpdate(){const response=await fetch('https://api.github.com/repos/samueltoken/Allradione/releases/latest',{signal:AbortSignal.timeout(10000)});if(response.status===404)return {available:false,currentVersion:'0.2.0',version:'0.2.0',url:'https://github.com/samueltoken/Allradione/releases',message:'아직 새 릴리즈가 없어.'};if(!response.ok)throw new Error('업데이트 정보를 불러올 수 없어.');const release=await response.json();update={available:release.tag_name.replace(/^v/,'')!=='0.2.0',currentVersion:'0.2.0',version:release.tag_name.replace(/^v/,''),url:release.html_url};return update;},
  async installUpdate(){window.open(update?.url||'https://github.com/samueltoken/Allradione/releases','_blank','noopener,noreferrer');return{message:'릴리즈 페이지에서 새 버전을 다운로드해줘.'};},
  async openExternal(url){if(/^https?:\/\//i.test(url))window.open(url,'_blank','noopener,noreferrer');},
- async version(){return '0.1.0';}
+ async cacheInfo(){return {httpBytes:null,metadataBytes:0,codeBytes:0,totalBytes:0,errors:['데스크톱 앱에서 사용할 수 있어.']};},
+ async clearCache(){throw new Error('캐시 정리는 데스크톱 앱에서 사용할 수 있어.');},
+ async createDesktopShortcut(){return {created:false,message:'바로가기는 설치된 Windows 앱에서 만들 수 있어.'};},
+ async version(){return '0.2.0';}
 };

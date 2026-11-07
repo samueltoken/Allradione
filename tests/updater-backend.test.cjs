@@ -1,9 +1,14 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
 const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, makeUpdateScript, readLimited, fetchResponse } = require('../electron/updater.cjs');
 const tag = 'v0.2.0';
-const name = 'Allradione-0.2.0-win-x64.exe';
+const name = 'Allradione-Setup-0.2.0-x64.exe';
 const assetUrl = `https://github.com/samueltoken/Allradione/releases/download/${tag}/${name}`;
 const hash = 'c'.repeat(64);
 
@@ -15,12 +20,13 @@ test('stable semantic versions compare numerically and reject malformed input', 
   for (const value of ['v01.2.3', '0.2.0-beta.1', '0.2', '1.2.3/../../x', '9999999999999999999.0.0']) assert.equal(parseVersion(value), null);
 });
 
-test('only the exact release portable asset is selected', () => {
+test('only the exact release NSIS installer asset is selected', () => {
   const asset = { name, browser_download_url: assetUrl };
   assert.equal(selectAsset({ tag_name: tag, assets: [asset] }), asset);
   assert.equal(selectAsset({ tag_name: tag, prerelease: true, assets: [asset] }), null);
   assert.equal(selectAsset({ tag_name: tag, assets: [{ ...asset, browser_download_url: assetUrl.replace('samueltoken', 'attacker') }] }), null);
   assert.equal(selectAsset({ tag_name: tag, assets: [{ ...asset, name: 'evil.exe' }] }), null);
+  assert.equal(selectAsset({ tag_name: tag, assets: [{ name: 'Allradione-0.2.0-win-x64.exe', browser_download_url: assetUrl.replace(name, 'Allradione-0.2.0-win-x64.exe') }] }), null);
 });
 
 test('asset URL validation rejects credentials, alternate hosts, ports and suffixes', () => {
@@ -43,12 +49,17 @@ test('checksum manifests match one exact filename and reject duplicates', () => 
   assert.equal(checksumFor(`${hash}  ${name}\n${hash}  ${name}`, name), null);
 });
 
-test('updater script treats user paths as literal data and targets only the old exe', () => {
-  const target = "C:\\Users\\O'Brien\\Allradione.exe";
-  const script = makeUpdateScript({ parentPid: 1234, target, stagedExe: 'C:\\update\\app.exe', backup: target + '.backup', scriptPath: 'C:\\update\\script.ps1', expectedHash: hash });
-  assert.ok(script.includes("$target = 'C:\\Users\\O''Brien\\Allradione.exe'"));
+test('updater script waits for clean exit and delegates replacement/restart to NSIS', () => {
+  const appExe = "C:\\Users\\O'Brien\\Allradione.exe";
+  const script = makeUpdateScript({ parentPid: 1234, appExe, installer: 'C:\\update\\setup.exe', scriptPath: 'C:\\update\\script.ps1', expectedHash: hash });
+  assert.ok(script.includes("$appExe = 'C:\\Users\\O''Brien\\Allradione.exe'"));
   assert.ok(script.includes('Wait-Process -Id 1234'));
-  assert.ok(script.includes('Move-Item -LiteralPath $backup -Destination $target'));
+  assert.ok(script.includes("-ArgumentList @('/S', '--updated', '--force-run')"));
+  assert.ok(script.includes('-PassThru -Wait -ErrorAction Stop'));
+  assert.ok(!script.includes('Move-Item'));
+  assert.ok(!script.includes('Copy-Item'));
+  assert.ok(!script.includes('Remove-Item -LiteralPath $appExe'));
+  assert.ok(!script.includes('--delete-app-data'));
   assert.ok(!script.includes('-Recurse'));
   assert.throws(() => makeUpdateScript({ parentPid: '1;evil', expectedHash: hash }));
 });
@@ -71,6 +82,7 @@ test('checkUpdate handles missing releases and exposes a real newer asset', asyn
   assert.equal(state.assetUrl, assetUrl);
   assert.equal(state.digest, hash);
   assert.equal(state.version, '0.2.0');
+  assert.equal(state.mode, 'development');
   await updater.installUpdate();
   assert.deepEqual(opened, ['https://github.com/samueltoken/Allradione/releases/tag/v0.2.0']);
 });
@@ -111,4 +123,76 @@ test('an early check failure releases the install lock for retry', async () => {
   await updater.installUpdate();
   await updater.installUpdate();
   assert.equal(fetchCount, 2);
+});
+
+test('installed Windows downloads a verified setup then exits only after helper spawn', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-update-test-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const payload = Buffer.alloc(2048, 0x40);
+  payload.write('MZ');
+  const digest = crypto.createHash('sha256').update(payload).digest('hex');
+  const release = { tag_name: tag, assets: [{ name, browser_download_url: assetUrl, digest: 'sha256:' + digest }] };
+  let quitCount = 0;
+  const launches = [];
+  const updater = createUpdater({
+    app: { getVersion: () => '0.1.0', isPackaged: true, getPath: () => 'C:\\Users\\listener\\AppData\\Local\\Programs\\Allradione\\Allradione.exe', quit: () => { quitCount++; } },
+    shell: {}, dataDir, platform: 'win32', env: { SystemRoot: 'C:\\Windows' },
+    fetchImpl: async url => new Response(url === assetUrl ? payload : JSON.stringify(release)),
+    scheduleQuit: callback => callback(),
+    spawnImpl: (exe, args, options) => {
+      assert.equal(quitCount, 0);
+      launches.push({ exe, args, options });
+      const child = new EventEmitter(); child.unref = () => {};
+      process.nextTick(() => child.emit('spawn'));
+      return child;
+    }
+  });
+  assert.equal((await updater.checkUpdate()).mode, 'installer');
+  const result = await updater.installUpdate();
+  assert.match(result.message, /설치 파일 검증 완료/);
+  assert.equal(quitCount, 1);
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].exe, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  const script = Buffer.from(launches[0].args.at(-1), 'base64').toString('utf16le');
+  assert.ok(script.includes(name));
+  assert.ok(script.includes("@('/S', '--updated', '--force-run')"));
+  assert.ok(!script.includes('Move-Item'));
+  await updater.installUpdate();
+  assert.equal(launches.length, 1, 'the handed-off update remains locked until exit');
+});
+
+test('legacy portable mode opens the setup release instead of replacing its launcher', async () => {
+  const release = { tag_name: tag, assets: [{ name, browser_download_url: assetUrl, digest: 'sha256:' + hash }] };
+  let openCount = 0, spawnCount = 0;
+  const updater = createUpdater({
+    app: { getVersion: () => '0.1.0', isPackaged: true },
+    shell: { openExternal: async () => { openCount++; } }, dataDir: '/unused', platform: 'win32',
+    env: { PORTABLE_EXECUTABLE_FILE: 'C:\\Downloads\\Allradione.exe' },
+    fetchImpl: async () => new Response(JSON.stringify(release)),
+    spawnImpl: () => { spawnCount++; throw new Error('must not spawn'); }
+  });
+  assert.equal((await updater.checkUpdate()).mode, 'portable');
+  const result = await updater.installUpdate();
+  assert.match(result.message, /새 설치 파일/);
+  assert.equal(openCount, 1);
+  assert.equal(spawnCount, 0);
+});
+
+test('checksum mismatch discards the setup and keeps the installed application running', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-update-test-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const payload = Buffer.alloc(2048, 0x40); payload.write('MZ');
+  const release = { tag_name: tag, assets: [{ name, browser_download_url: assetUrl, digest: 'sha256:' + hash }] };
+  let quitCount = 0, spawnCount = 0;
+  const updater = createUpdater({
+    app: { getVersion: () => '0.1.0', isPackaged: true, getPath: () => 'C:\\Programs\\Allradione\\Allradione.exe', quit: () => { quitCount++; } },
+    shell: {}, dataDir, platform: 'win32', env: {},
+    fetchImpl: async url => new Response(url === assetUrl ? payload : JSON.stringify(release)),
+    spawnImpl: () => { spawnCount++; throw new Error('must not launch'); }
+  });
+  const result = await updater.installUpdate();
+  assert.match(result.message, /체크섬이 일치하지 않아/);
+  assert.equal(quitCount, 0);
+  assert.equal(spawnCount, 0);
+  assert.deepEqual(await fs.readdir(path.join(dataDir, 'updates')), []);
 });

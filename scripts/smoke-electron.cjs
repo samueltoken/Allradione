@@ -91,12 +91,130 @@ async function findWidget(kind) {
   return page;
 }
 
+async function assertFonts(page) {
+  const fonts = await page.evaluate(async () => {
+    const required = ['Pretendard Variable', 'Sora Variable', 'IBM Plex Mono'];
+    await document.fonts.ready;
+    return Promise.all(required.map(async family => {
+      const faces = await document.fonts.load(`16px "${family}"`, family.startsWith('Pretendard') ? '한글 라디오' : 'Allradione 123');
+      return { family, count: faces.length, loaded: faces.length > 0 && faces.every(face => face.status === 'loaded') };
+    }));
+  });
+  for (const font of fonts) assert.equal(font.loaded, true, `Bundled font must load: ${font.family}`);
+  results.push({ check: 'bundled Korean, display and mono fonts', fonts });
+}
+
+async function captureTransparentWidget(page, fileName) {
+  const png = await page.screenshot({ path: path.join(OUTPUT, fileName), omitBackground: true });
+  const pixels = await application.evaluate(({ nativeImage }, base64) => {
+    const screenshot = nativeImage.createFromBuffer(Buffer.from(base64, 'base64'));
+    const { width, height } = screenshot.getSize();
+    const bitmap = screenshot.toBitmap();
+    const alpha = (x, y) => bitmap[(y * width + x) * 4 + 3];
+    return { width, height, corners: [alpha(0, 0), alpha(width - 1, 0), alpha(0, height - 1), alpha(width - 1, height - 1)], center: alpha(Math.floor(width / 2), Math.floor(height / 2)) };
+  }, png.toString('base64'));
+  assert.deepEqual(pixels.corners, [0, 0, 0, 0], `${fileName}: actual PNG corners must be fully transparent`);
+  assert.ok(pixels.center > 0, `${fileName}: screenshot must contain a visible widget`);
+  results.push({ check: `${fileName} actual PNG alpha`, ...pixels });
+}
+
 async function readPlayerState(page) {
   return page.evaluate(() => new Promise((resolve, reject) => {
     let off = () => {};
     const timeout = setTimeout(() => { off(); reject(new Error('Player state did not arrive within 5 seconds.')); }, 5000);
     off = window.allradione.onPlayer(state => { clearTimeout(timeout); off(); resolve(state); });
   }));
+}
+
+async function assertDialAndFlags(main) {
+  // This final, explicitly labeled UI fixture checks interaction without requiring a broadcaster.
+  // It runs after the independent live probe and never reports fixture metadata as live audio.
+  const stations = Array.from({ length: 7 }, (_, index) => ({
+    ...fixtureState.station,
+    stationuuid: `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`,
+    name: `UI fixture · Dial station ${index + 1}`, countrycode: 'JP', tags: 'ui-fixture',
+  }));
+  await application.evaluate(({ ipcMain }, rows) => {
+    for (const channel of ['radio:countries', 'radio:stations', 'radio:stream', 'radio:click']) ipcMain.removeHandler(channel);
+    ipcMain.handle('radio:countries', () => [{ code: 'JP', name: '일본', stationcount: rows.length }]);
+    ipcMain.handle('radio:stations', () => rows);
+    ipcMain.handle('radio:stream', () => { throw new Error('UI fixture has no audio stream.'); });
+    ipcMain.handle('radio:click', () => {});
+  }, stations);
+  await main.reload();
+  const destination = main.locator('.destination[data-country="JP"]');
+  await destination.waitFor({ timeout: TIMEOUT });
+  await expect.poll(() => destination.locator('.country-flag').evaluate(element => {
+    const image = element instanceof HTMLImageElement ? element : element.querySelector('img');
+    return Boolean(image?.complete && image.naturalWidth > 0);
+  }), { timeout: TIMEOUT }).toBe(true);
+  const flag = await destination.locator('.country-flag').evaluate(element => {
+    const image = element instanceof HTMLImageElement ? element : element.querySelector('img');
+    return { loaded: Boolean(image?.complete && image.naturalWidth > 0), source: image?.currentSrc || image?.src || '' };
+  });
+  assert.equal(flag.loaded, true, 'Country flag image must load');
+  assert.match(flag.source, /^(file:|data:)/, 'Flags must use bundled local assets');
+  await destination.click();
+  await expect(main.locator('[data-station]')).toHaveCount(stations.length, { timeout: TIMEOUT });
+  await main.locator('[data-station]').first().click();
+  await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
+  const dial = main.locator('#dial');
+  await dial.scrollIntoViewIfNeeded();
+  const box = await dial.boundingBox();
+  assert.ok(box && box.width > 0 && box.height > 0, 'Dial must be visible');
+  const cursorBefore = await dial.evaluate(element => getComputedStyle(element).cursor);
+  assert.notEqual(cursorBefore, 'crosshair', 'Dial idle cursor must not be a crosshair');
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const radius = Math.min(box.width, box.height) * 0.38;
+  const initialTransform = await main.locator('#dial-needle').evaluate(element => getComputedStyle(element).transform);
+  await main.mouse.move(center.x, center.y - radius);
+  await main.mouse.down();
+  await expect(dial).toHaveClass(/dragging/);
+  for (let step = 1; step <= 10; step++) {
+    const angle = -Math.PI / 2 + step * Math.PI / 20;
+    await main.mouse.move(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius);
+  }
+  const draggedTransform = await main.locator('#dial-needle').evaluate(element => getComputedStyle(element).transform);
+  assert.notEqual(draggedTransform, initialTransform, 'Dial needle must follow the pointer during drag');
+  assert.notEqual(await dial.evaluate(element => getComputedStyle(element).cursor), 'crosshair', 'Dragging cursor must not be a crosshair');
+  await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
+  await main.mouse.up();
+  await expect(dial).not.toHaveClass(/dragging/);
+  await expect(main.locator('[data-station-name]')).not.toHaveText(stations[0].name);
+  const selectedName = await main.locator('[data-station-name]').innerText();
+  assert.ok(stations.some(station => station.name === selectedName), 'Dial release must select an actual fixture station');
+  await main.screenshot({ path: path.join(OUTPUT, 'dial-ui-fixture.png') });
+  results.push({ check: 'explicit UI fixture: dial drag and bundled flag', selectedName, flagLoaded: flag.loaded, audio: 'not attempted; fixture stream deliberately unavailable' });
+}
+
+async function assertCacheControls(main) {
+  const userData = await application.evaluate(({ app }) => app.getPath('userData'));
+  const cacheFile = path.join(userData, 'cache-stations-ZZ.json');
+  const untouchedFile = path.join(userData, 'smoke-cache-preserve.txt');
+  await fs.mkdir(userData, { recursive: true });
+  await fs.writeFile(cacheFile, JSON.stringify({ time: Date.now(), data: [], smokePadding: 'x'.repeat(8192) }));
+  await fs.writeFile(untouchedFile, 'Unrelated files must survive cache clearing.');
+  const original = await main.evaluate(() => window.allradione.getPreferences());
+  await main.evaluate(station => window.allradione.savePreferences({ favorites: [station], volume: 0.23 }), fixtureState.station);
+  const before = await main.evaluate(() => window.allradione.cacheInfo());
+  assert.ok(before.metadataBytes >= 8192, 'Cache information must count the seeded metadata file');
+  await main.locator('[data-action="settings"]').click();
+  await expect(main.locator('#cache-size')).toBeVisible();
+  await main.locator('[data-action="cache-clear"]').click();
+  await expect.poll(async () => { try { await fs.access(cacheFile); return false; } catch { return true; } }, { timeout: TIMEOUT }).toBe(true);
+  await expect(main.locator('[data-action="cache-clear"]')).toBeEnabled();
+  await expect(main.locator('#cache-message')).not.toHaveText('');
+  const after = await main.evaluate(() => window.allradione.cacheInfo());
+  const kept = await main.evaluate(() => window.allradione.getPreferences());
+  assert.equal(kept.volume, 0.23, 'Cache clearing must preserve the saved volume');
+  assert.deepEqual(kept.favorites.map(station => station.stationuuid), [fixtureState.station.stationuuid], 'Cache clearing must preserve favorites');
+  assert.equal(await fs.readFile(untouchedFile, 'utf8'), 'Unrelated files must survive cache clearing.');
+  assert.ok(Number.isFinite(after.metadataBytes) && after.metadataBytes >= 0, 'Refreshed cache size must be valid');
+  await main.screenshot({ path: path.join(OUTPUT, 'settings-cache.png') });
+  await main.keyboard.press('Escape');
+  await main.evaluate(preferences => window.allradione.savePreferences(preferences), original);
+  await fs.rm(untouchedFile);
+  results.push({ check: 'cache clear action preserves settings, favorites and unrelated files', beforeBytes: before.totalBytes, afterBytes: after.totalBytes, metadataBefore: before.metadataBytes, metadataAfter: after.metadataBytes });
 }
 
 async function captureCountryAndPlayback(main) {
@@ -190,6 +308,7 @@ async function assertWidgetState(widget) {
 }
 
 async function run() {
+  const installedMode = process.env.ALLRADIONE_SMOKE_INSTALLED === '1';
   const executablePath = process.env.ALLRADIONE_SMOKE_EXECUTABLE
     ? path.resolve(ROOT, process.env.ALLRADIONE_SMOKE_EXECUTABLE)
     : undefined;
@@ -197,6 +316,9 @@ async function run() {
     assert.equal((await fs.stat(executablePath)).isFile(), true, 'Packaged smoke executable must be a file');
     assert.notEqual(process.env.ALLRADIONE_SMOKE_SKIP_SINGLE_INSTANCE, '1', 'Packaged smoke must exercise unmodified startup');
   } else await fs.access(path.join(ROOT, 'dist', 'index.html'));
+  if (installedMode) {
+    assert.ok(executablePath && process.platform === 'win32' && process.env.CI === 'true', 'Installed profile smoke requires a packaged executable in disposable Windows CI');
+  }
   await fs.mkdir(OUTPUT, { recursive: true });
   temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-smoke-'));
   let entry = ROOT;
@@ -207,17 +329,18 @@ async function run() {
     await fs.writeFile(entry, `const {app,nativeImage}=require('electron'); app.requestSingleInstanceLock=()=>true; if(process.platform==='linux'&&!process.env.DISPLAY&&!process.env.WAYLAND_DISPLAY)nativeImage.createFromPath=()=>nativeImage.createEmpty(); require(${JSON.stringify(path.join(ROOT, 'electron', 'main.cjs'))});`);
     results.push({ check: 'environment limitation', note: 'Single-instance lock and headless Linux tray skipped in isolated local harness; production and Windows CI remain unmodified.' });
   }
-  const args = [...(executablePath ? [] : [entry]), `--user-data-dir=${path.join(temporary, 'chromium')}`];
+  const args = [...(executablePath ? [] : [entry]), ...(installedMode ? [] : [`--user-data-dir=${path.join(temporary, 'chromium')}`])];
   if (process.platform === 'linux') {
     args.unshift('--no-sandbox', '--disable-dev-shm-usage');
     if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) args.unshift('--headless', '--ozone-platform=headless', '--disable-gpu', '--mute-audio');
   }
   const environment = { ...process.env, PORTABLE_EXECUTABLE_FILE: path.join(temporary, 'Allradione-smoke.exe') };
+  if (installedMode) delete environment.PORTABLE_EXECUTABLE_FILE;
   // Exercise the built release renderer and isolate preferences from a real user's copy.
   delete environment.ALLRADIONE_DEV_URL;
   delete environment.ELECTRON_RUN_AS_NODE;
   application = await _electron.launch({ ...(executablePath ? { executablePath } : {}), args, cwd: ROOT, env: environment, timeout: TIMEOUT });
-  results.push({ check: 'launch target', packagedExecutable: Boolean(executablePath) });
+  results.push({ check: 'launch target', packagedExecutable: Boolean(executablePath), installedProfile: installedMode });
   application.on('window', observe);
   application.process().stderr?.on('data', chunk => {
     for (const line of chunk.toString().split('\n').filter(Boolean)) {
@@ -231,6 +354,7 @@ async function run() {
   await main.locator('.desktop-shell').waitFor({ timeout: TIMEOUT });
   await main.waitForFunction(() => typeof window.allradione?.setWidget === 'function', undefined, { timeout: TIMEOUT });
   await expect(main.locator('.wordmark')).toContainText('Allradione');
+  await assertFonts(main);
   const mainState = await nativeWindow('main');
   assert.equal(mainState.contextIsolation, true);
   assert.equal(mainState.nodeIntegration, false);
@@ -246,13 +370,14 @@ async function run() {
   await expect(main.locator('[data-action="check-update"]')).toBeVisible();
   await main.screenshot({ path: path.join(OUTPUT, 'settings.png') });
   await main.keyboard.press('Escape');
+  await assertCacheControls(main);
 
   await main.evaluate(() => window.allradione.setWidget(true, 'small'));
   const small = await findWidget('small');
   await assertWidget('small', 176, 190);
   await main.evaluate(state => window.allradione.publishPlayer(state), fixtureState);
   await assertWidgetState(small);
-  await small.screenshot({ path: path.join(OUTPUT, 'widget-small.png'), omitBackground: true });
+  await captureTransparentWidget(small, 'widget-small.png');
 
   // The widget must send real IPC commands back to the one playback owner.
   await main.evaluate(() => {
@@ -272,7 +397,7 @@ async function run() {
   // The native owner retains the last state when replacing the widget window.
   await assertWidgetState(medium);
   await expect(medium.locator('#widget-volume')).toHaveValue('42');
-  await medium.screenshot({ path: path.join(OUTPUT, 'widget.png'), omitBackground: true });
+  await captureTransparentWidget(medium, 'widget.png');
 
   await main.evaluate(() => window.allradione.windowAction('close'));
   await expect.poll(async () => (await nativeWindow('main'))?.visible, { timeout: TIMEOUT }).toBe(false);
@@ -291,6 +416,7 @@ async function run() {
   assert.equal(preferences.widgetSize, 'medium', 'Last widget size must persist');
   await main.evaluate(() => window.__allradioneSmokeUnsubscribe?.());
   await captureCountryAndPlayback(main);
+  await assertDialAndFlags(main);
   assert.deepEqual(rendererErrors, [], 'Unexpected renderer errors');
   results.push({ check: 'restore main and disable widget', passed: true });
   await fs.writeFile(path.join(OUTPUT, 'smoke-electron.json'), JSON.stringify({ passed: true, platform: process.platform, results }, null, 2));

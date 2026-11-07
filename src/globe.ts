@@ -7,6 +7,7 @@ import type { FeatureCollection, Polygon, MultiPolygon } from 'geojson';
 import type { Topology, GeometryCollection } from 'topojson-specification';
 import type { Country } from './types';
 import { preparePolygon, countryAt, countryCenter, type GlobeCountry } from './globe-geo';
+import { flagUrl } from './flags';
 import './globe.css';
 
 const WORLD = feature(atlas as unknown as Topology, atlas.objects.countries as unknown as GeometryCollection) as FeatureCollection<Polygon|MultiPolygon>;
@@ -30,6 +31,7 @@ export class RadioGlobe {
   private mapCanvas=document.createElement('canvas');
   private paths=new Map<GlobeCountry,Path2D>();
   private tooltip=document.createElement('div');
+  private tooltipKey='';
   private available=new Map<string,Country>();
   private selected='';
   private hovered='';
@@ -39,9 +41,9 @@ export class RadioGlobe {
   private intersectionObserver?:IntersectionObserver;
   private disposed=false;
   private visible=true;
+  private active=true;
   private reducedMotion=false;
   private dragging=false;
-  private interacted=false;
   private pointerStart?:{x:number;y:number;id:number};
   private frame=0;
   private lastFrame=0;
@@ -78,7 +80,7 @@ export class RadioGlobe {
 
   setCountries(countries:Country[]):void{
     this.available=new Map(countries.filter(c=>c.stationcount>0).map(c=>[c.code.toUpperCase(),c]));
-    this.paintMap();
+    if(this.hovered)this.showCountry(COUNTRIES.find(country=>country.code===this.hovered));
   }
   selectCountry(code:string):void{
     this.selected=code.toUpperCase();this.paintMap();
@@ -87,26 +89,34 @@ export class RadioGlobe {
     const [lon,lat]=country.center;
     const distance=this.camera.position.length();
     this.focusTarget=this.direction(lat,lon).multiplyScalar(distance);
-    this.interacted=true;this.cancelFocus=false;
+    this.cancelFocus=false;
     if(this.reducedMotion){this.camera.position.copy(this.focusTarget);this.focusTarget=undefined;this.controls.update();}
     this.requestFrame();
   }
   /** Positive delta moves closer; negative delta moves farther away. */
   zoom(delta:number):void{
     if(!this.controls)return;
-    this.focusTarget=undefined;this.interacted=true;
+    this.focusTarget=undefined;
     const distance=THREE.MathUtils.clamp(this.camera.position.length()*Math.exp(-delta*.18),this.controls.minDistance,this.controls.maxDistance);
     this.camera.position.setLength(distance);this.controls.update();this.requestFrame();
   }
   reset():void{
-    this.focusTarget=undefined;this.interacted=false;this.selected='';this.hovered='';
+    this.focusTarget=undefined;this.selected='';this.hovered='';
     this.camera.position.copy(this.direction(18,105).multiplyScalar(3.5));
     this.controls?.target.set(0,0,0);this.controls?.update();this.paintMap();this.hideTooltip();this.requestFrame();
   }
   setReducedMotion(value:boolean):void{
+    if(this.reducedMotion===value)return;
     this.reducedMotion=value;
     if(this.controls)this.controls.enableDamping=!value;
     this.requestFrame();
+  }
+  /** Native window visibility is explicit because audio keeps background throttling off. */
+  setActive(value:boolean):void{
+    if(this.disposed||this.active===value)return;
+    this.active=value;
+    if(value){this.resize();this.requestFrame();}
+    else {this.stopFrame();this.hideTooltip();}
   }
   destroy():void{
     if(this.disposed)return;this.disposed=true;this.stopFrame();
@@ -139,7 +149,8 @@ export class RadioGlobe {
   }
   private createScene():void{
     this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,powerPreference:'low-power'});
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.75));
+    const pixelRatio=Math.min(window.devicePixelRatio||1,2);
+    if(this.renderer.getPixelRatio()!==pixelRatio)this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setClearColor(0x000000,0);
     this.renderer.outputColorSpace=THREE.SRGBColorSpace;
     const canvas=this.renderer.domElement;canvas.tabIndex=0;
@@ -163,6 +174,7 @@ export class RadioGlobe {
     this.camera.position.copy(this.direction(18,105).multiplyScalar(3.5));
     this.controls=new OrbitControls(this.camera,canvas);
     this.controls.enablePan=false;this.controls.enableDamping=true;this.controls.dampingFactor=.065;
+    this.controls.autoRotate=false;
     this.controls.rotateSpeed=.55;this.controls.zoomSpeed=.65;
     this.controls.minDistance=1.65;this.controls.maxDistance=5.8;
     this.controls.minPolarAngle=.05;this.controls.maxPolarAngle=Math.PI-.05;
@@ -208,6 +220,8 @@ export class RadioGlobe {
   private resize():void{
     if(!this.renderer||this.disposed)return;
     const width=Math.max(1,this.container.clientWidth),height=Math.max(1,this.container.clientHeight);
+    const pixelRatio=Math.min(window.devicePixelRatio||1,2);
+    if(this.renderer.getPixelRatio()!==pixelRatio)this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width,height,false);this.camera.aspect=width/height;
     this.camera.updateProjectionMatrix();this.requestFrame();
   }
@@ -227,12 +241,18 @@ export class RadioGlobe {
     if(this.hovered!==code){this.hovered=code;this.paintMap();}
     if(!country){this.hideTooltip();return;}
     const info=this.available.get(code);
-    this.tooltip.replaceChildren();this.tooltip.append(document.createTextNode(info?.name??country.name));
-    const count=document.createElement('span');count.textContent=info?`${info.stationcount.toLocaleString()} stations`:'방송 목록에서 확인';this.tooltip.append(count);
+    const tooltipKey=`${code}:${info?.name??country.name}:${info?.stationcount??''}`;
+    if(this.tooltipKey!==tooltipKey){
+      this.tooltipKey=tooltipKey;this.tooltip.replaceChildren();
+      const source=flagUrl(code);
+      if(source){const flag=document.createElement('img');flag.className='globe-tooltip-flag';flag.src=source;flag.alt='';flag.width=24;flag.height=18;flag.addEventListener('error',()=>flag.remove(),{once:true});this.tooltip.append(flag);}
+      const name=document.createElement('span');name.className='globe-tooltip-name';name.textContent=info?.name??country.name;this.tooltip.append(name);
+      const count=document.createElement('span');count.className='globe-tooltip-count';count.textContent=info?`${info.stationcount.toLocaleString()} stations`:'방송 목록에서 확인';this.tooltip.append(count);
+    }
     this.tooltip.classList.add('is-visible');
     if(this.renderer)this.renderer.domElement.style.cursor=code?'pointer':'grab';
   }
-  private hideTooltip():void{this.tooltip.classList.remove('is-visible');if(this.renderer)this.renderer.domElement.style.cursor='grab';}
+  private hideTooltip():void{this.tooltip.classList.remove('is-visible');if(this.renderer)this.renderer.domElement.style.cursor=this.dragging?'grabbing':'grab';}
   private onPointerDown=(event:PointerEvent):void=>{if(event.button!==0)return;this.pointerStart={x:event.clientX,y:event.clientY,id:event.pointerId};this.cancelFocus=true;};
   private onPointerUp=(event:PointerEvent):void=>{
     const start=this.pointerStart;this.pointerStart=undefined;
@@ -243,16 +263,16 @@ export class RadioGlobe {
   private onPointerMove=(event:PointerEvent):void=>{
     if(this.dragging||performance.now()-this.lastHover<65)return;this.lastHover=performance.now();this.showCountry(this.pick(event.clientX,event.clientY));
   };
-  private onPointerLeave=():void=>{this.hovered='';this.paintMap();this.hideTooltip();};
-  private onPointerCancel=():void=>{this.pointerStart=undefined;this.dragging=false;};
-  private onControlStart=():void=>{this.dragging=true;this.interacted=true;this.focusTarget=undefined;this.hideTooltip();this.requestFrame();};
-  private onControlEnd=():void=>{this.dragging=false;this.requestFrame();};
+  private onPointerLeave=():void=>{if(this.hovered){this.hovered='';this.paintMap();}this.hideTooltip();};
+  private onPointerCancel=():void=>{this.pointerStart=undefined;this.dragging=false;this.hideTooltip();};
+  private onControlStart=():void=>{this.dragging=true;this.focusTarget=undefined;this.hideTooltip();this.requestFrame();};
+  private onControlEnd=():void=>{this.dragging=false;this.hideTooltip();this.requestFrame();};
   private onControlChange=():void=>{this.requestFrame();};
-  private onWheel=():void=>{this.interacted=true;this.focusTarget=undefined;this.requestFrame();};
+  private onWheel=():void=>{this.focusTarget=undefined;this.requestFrame();};
   private onKeyDown=(event:KeyboardEvent):void=>{
     const movements:Record<string,[number,number]>={ArrowLeft:[-.12,0],ArrowRight:[.12,0],ArrowUp:[0,-.1],ArrowDown:[0,.1]};
     if(event.key in movements){
-      event.preventDefault();this.interacted=true;this.focusTarget=undefined;
+      event.preventDefault();this.focusTarget=undefined;
       const spherical=new THREE.Spherical().setFromVector3(this.camera.position);const [theta,phi]=movements[event.key];
       spherical.theta+=theta;spherical.phi=THREE.MathUtils.clamp(spherical.phi+phi,.05,Math.PI-.05);this.camera.position.setFromSpherical(spherical);this.controls?.update();this.requestFrame();
     }else if(event.key==='+'||event.key==='='){event.preventDefault();this.zoom(1);}else if(event.key==='-'){event.preventDefault();this.zoom(-1);}
@@ -261,9 +281,9 @@ export class RadioGlobe {
   };
   private onVisibility=():void=>{if(document.hidden)this.stopFrame();else this.requestFrame();};
   private stopFrame():void{if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this.lastFrame=0;}
-  private requestFrame():void{if(!this.frame&&!this.disposed&&this.renderer&&this.visible&&!document.hidden)this.frame=requestAnimationFrame(this.animate);}
+  private requestFrame():void{if(!this.frame&&!this.disposed&&this.renderer&&this.active&&this.visible&&!document.hidden&&this.container.isConnected)this.frame=requestAnimationFrame(this.animate);}
   private animate=(time:number):void=>{
-    this.frame=0;if(this.disposed||!this.renderer||!this.visible||document.hidden)return;
+    this.frame=0;if(this.disposed||!this.renderer||!this.active||!this.visible||document.hidden||!this.container.isConnected){this.lastFrame=0;return;}
     const elapsed=this.lastFrame?(time-this.lastFrame)/1000:1/60;
     if(this.lastFrame && elapsed<1/32){this.requestFrame();return;}
     this.lastFrame=time;
@@ -274,10 +294,11 @@ export class RadioGlobe {
       if(this.camera.position.distanceTo(this.focusTarget)<.004){this.camera.position.copy(this.focusTarget);this.focusTarget=undefined;}
     }
     let changed=false;
-    if(this.controls){this.controls.autoRotate=!this.reducedMotion&&!this.interacted;this.controls.autoRotateSpeed=.22;changed=this.controls.update(Math.min(.1,elapsed));}
+    if(this.controls)changed=this.controls.update(Math.min(.1,elapsed));
     this.renderer.render(this.scene,this.camera);
     this.renderer.domElement.dataset.rendered='true';
-    // An explored globe becomes idle once damping settles; hidden windows never render.
-    if(this.controls?.autoRotate||this.dragging||this.focusTarget||changed)this.requestFrame();
+    // No idle rotation or held-pointer loop: only focus motion and damping need more frames.
+    if(this.focusTarget||changed)this.requestFrame();
+    if(!this.frame)this.lastFrame=0;
   };
 }
