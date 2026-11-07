@@ -254,7 +254,7 @@ async function exerciseUpdateHandoff({ installer, executable, userData, fromVers
 
 async function exerciseInstalledAppUpdate({ installer, executable, userData, fromVersion, toVersion, releasedUpdater, reportedCurrentVersion = null, legacyDiagnostic = false }) {
   const { _electron } = require('playwright');
-  const prefix = `installed-update-${fromVersion}-to-${toVersion}`;
+  const prefix = `installed-update-${releasedUpdater ? 'baseline' : 'current'}-${fromVersion}-to-${toVersion}`;
   const traceFile = path.join(OUTPUT, `${prefix}-trace.json`);
   const helperStdout = path.join(OUTPUT, `${prefix}-helper-stdout.txt`);
   const helperStderr = path.join(OUTPUT, `${prefix}-helper-stderr.txt`);
@@ -553,7 +553,7 @@ async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-installer-smoke-'));
   const installDirectory = path.join(temporary, 'Allradione Custom Folder');
   const setupCopy = path.join(temporary, `Allradione-Setup-${packageJson.version}-x64.exe`);
-  const baselineInstaller = path.join(temporary, `Allradione-Setup-${BASELINE_VERSION}-x64.exe`);
+  const baselineInstaller = path.join(temporary, 'baseline', `Allradione-Setup-${BASELINE_VERSION}-x64.exe`);
   const portableData = path.join(temporary, 'Allradione-data');
   const unrelatedDirectory = path.join(temporary, 'unrelated-data');
   const executable = path.join(installDirectory, 'Allradione.exe');
@@ -590,6 +590,7 @@ async function main() {
 
   try {
     await fs.copyFile(installer, setupCopy);
+    await fs.mkdir(path.dirname(baselineInstaller));
     await downloadBaselineInstaller(baselineInstaller);
     await fs.mkdir(portableData);
     await fs.writeFile(path.join(portableData, 'settings.json'), legacyPreferences);
