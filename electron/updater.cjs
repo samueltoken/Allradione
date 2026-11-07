@@ -118,7 +118,11 @@ try {
   if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA256 mismatch' }
   Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
   if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
-  $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -Wait -ErrorAction Stop
+  $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -ErrorAction Stop
+  # Cache the handle before exit so Windows PowerShell can read ExitCode reliably.
+  $null = $setup.Handle
+  # Wait only for NSIS. Start-Process -Wait also waits for the restarted app.
+  $setup.WaitForExit()
   if ($setup.ExitCode -ne 0) { throw ('Installer failed or was canceled. Exit code: ' + $setup.ExitCode) }
   $installed = $true
 } catch {

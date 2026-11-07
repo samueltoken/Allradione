@@ -55,7 +55,12 @@ test('updater script waits for clean exit and delegates replacement/restart to N
   assert.ok(script.includes("$appExe = 'C:\\Users\\O''Brien\\Allradione.exe'"));
   assert.ok(script.includes('Wait-Process -Id 1234'));
   assert.ok(script.includes("-ArgumentList @('/S', '--updated', '--force-run')"));
-  assert.ok(script.includes('-PassThru -Wait -ErrorAction Stop'));
+  const setupLaunch = script.split('\n').find(line => line.includes('$setup = Start-Process'));
+  assert.match(setupLaunch, /-PassThru -ErrorAction Stop/);
+  assert.doesNotMatch(setupLaunch, /-Wait(?:\s|$)/);
+  assert.ok(script.indexOf('$null = $setup.Handle') < script.indexOf('$setup.WaitForExit()'));
+  assert.ok(script.indexOf('$setup.WaitForExit()') > script.indexOf(setupLaunch));
+  assert.ok(script.indexOf('$setup.WaitForExit()') < script.indexOf('if ($setup.ExitCode -ne 0)'));
   assert.ok(!script.includes('Move-Item'));
   assert.ok(!script.includes('Copy-Item'));
   assert.ok(!script.includes('Remove-Item -LiteralPath $appExe'));
