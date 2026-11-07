@@ -163,13 +163,16 @@ $scriptPath = ${psLiteral(scriptPath)}
 $stageDir = [System.IO.Path]::GetDirectoryName($installer)
 $expected = ${psLiteral(expectedHash.toLowerCase())}
 $installed = $false
+$canonicalAppExe = $null
 function Test-ParentRunning {
   try { return -not [System.Diagnostics.Process]::GetProcessById(${parentPid}).HasExited } catch { return $false }
 }
 function Find-AppProcess {
-  foreach ($candidate in [System.Diagnostics.Process]::GetProcessesByName([System.IO.Path]::GetFileNameWithoutExtension($appExe))) {
+  if (-not $canonicalAppExe) { return $null }
+  foreach ($candidate in [System.Diagnostics.Process]::GetProcessesByName([System.IO.Path]::GetFileNameWithoutExtension($canonicalAppExe))) {
     try {
-      if (-not $candidate.HasExited -and [string]::Equals($candidate.MainModule.FileName, $appExe, [System.StringComparison]::OrdinalIgnoreCase)) { return $candidate }
+      $candidatePath = [AllradioneUpdatePaths]::Canonical($candidate.MainModule.FileName)
+      if (-not $candidate.HasExited -and $candidatePath -and [string]::Equals($candidatePath, $canonicalAppExe, [System.StringComparison]::OrdinalIgnoreCase)) { return $candidate }
     } catch {}
   }
   return $null
@@ -177,6 +180,35 @@ function Find-AppProcess {
 try {
   # Use Windows' own module even when another PowerShell edition changed PSModulePath.
   Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1" -ErrorAction Stop
+  Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+  # Resolve through an actual file handle: GetFullPath preserves 8.3 names and
+  # cannot identify junction aliases of the same installed executable.
+  Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class AllradioneUpdatePaths {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint capacity, uint flags);
+  public static string Canonical(string name) {
+    if (String.IsNullOrEmpty(name)) return null;
+    using (SafeFileHandle file = CreateFile(name, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+      if (file.IsInvalid) return null;
+      StringBuilder path = new StringBuilder(512);
+      uint length = GetFinalPathNameByHandle(file, path, (uint)path.Capacity, 0);
+      if (length == 0) return null;
+      if (length >= path.Capacity) {
+        path = new StringBuilder(checked((int)length + 1));
+        length = GetFinalPathNameByHandle(file, path, (uint)path.Capacity, 0);
+      }
+      return length > 0 && length < path.Capacity ? path.ToString() : null;
+    }
+  }
+}
+'@ -ErrorAction Stop
   # Use .NET directly: inherited PSModulePath can hide Get-FileHash in Windows PowerShell.
   $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
   $installerStream = $null
@@ -189,6 +221,8 @@ try {
   }
   if ($actualHash -ne $expected) { throw 'SHA256 mismatch' }
   if (-not [System.IO.File]::Exists($appExe)) { throw 'Installed application was not found' }
+  $canonicalAppExe = [AllradioneUpdatePaths]::Canonical($appExe)
+  if (-not $canonicalAppExe) { throw 'Installed application path could not be resolved' }
   # Spawn only confirms powershell.exe exists. Acknowledge successful script startup
   # and checksum verification before the application is allowed to close.
   [Console]::Out.WriteLine('${HELPER_READY}')

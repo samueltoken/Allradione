@@ -218,12 +218,19 @@ async function exerciseUpdateHandoff({ installer, executable, userData, fromVers
     return { check: 'production PowerShell update handoff waits, upgrades, restarts and clears staging', passed: true, fromVersion, toVersion, helperSource: releasedUpdater?.source || 'current source build', helperSourceSha256: releasedUpdater?.sha256, flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: fromVersion !== toVersion };
   } catch (error) {
     let actualHash = null;
-    if (await exists(stagedInstaller)) {
-      const actual = crypto.createHash('sha256');
-      for await (const chunk of createReadStream(stagedInstaller)) actual.update(chunk);
-      actualHash = actual.digest('hex');
+    let actualHashError = null;
+    try {
+      if (await exists(stagedInstaller)) {
+        const actual = crypto.createHash('sha256');
+        for await (const chunk of createReadStream(stagedInstaller)) actual.update(chunk);
+        actualHash = actual.digest('hex');
+      }
+    } catch (diagnosticError) {
+      // The detached helper can remove the installer between exists() and open().
+      // A diagnostic race must never replace the original update failure.
+      actualHashError = diagnosticError.code || diagnosticError.message;
     }
-    await fs.writeFile(artifact('context.json'), JSON.stringify({ parentPid: oldProcess.pid, parentExitCode: oldProcess.exitCode, handoffFinished: finished, stageFiles: await fs.readdir(stage).catch(() => []), expectedHash: digest, actualHash, error: error.message }, null, 2));
+    await fs.writeFile(artifact('context.json'), JSON.stringify({ parentPid: oldProcess.pid, parentExitCode: oldProcess.exitCode, handoffFinished: finished, stageFiles: await fs.readdir(stage).catch(() => []), expectedHash: digest, actualHash, actualHashError, error: error.message }, null, 2)).catch(() => {});
     throw error;
   } finally {
     if (oldProcess.exitCode === null && !oldProcess.stdin.writableEnded) oldProcess.stdin.end('exit');

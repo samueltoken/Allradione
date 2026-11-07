@@ -181,15 +181,21 @@ test('Windows PowerShell executes the generated encoded helper and safely reject
   assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
 });
 
-test('real Windows PowerShell acknowledges readiness while the original app remains alive', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
+test('real Windows helper recognizes a running executable through a junction and acknowledges readiness', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
   const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-helper-ready-'));
   t.after(() => fs.rm(stage, { recursive: true, force: true }));
+  const junction = path.join(stage, 'executable-alias');
+  await fs.symlink(path.dirname(process.execPath), junction, 'junction');
   const installer = path.join(stage, 'never-execute-fixture.exe');
   const scriptPath = path.join(stage, 'apply-update.ps1');
   const payload = Buffer.alloc(2048, 0x40); payload.write('MZ');
   await fs.writeFile(installer, payload);
   const expectedHash = crypto.createHash('sha256').update(payload).digest('hex');
-  const script = makeUpdateScript({ parentPid: process.pid, installer, appExe: process.execPath, scriptPath, expectedHash });
+  const aliasedExe = path.join(junction, path.basename(process.execPath));
+  let script = makeUpdateScript({ parentPid: process.pid, installer, appExe: aliasedExe, scriptPath, expectedHash });
+  // Exercise the production process matcher before its parent wait. The live Node
+  // process reports its genuine path, while appExe deliberately uses a junction.
+  script = script.replace(`[Console]::Out.WriteLine('${HELPER_READY}')`, `if (-not (Find-AppProcess)) { throw 'Live executable was not recognized through its junction alias' }\n  [Console]::Out.WriteLine('${HELPER_READY}')`);
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
   const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { cwd: stage, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
