@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const { readLatestTrace } = require('./trace-snapshots.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
@@ -256,6 +257,8 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   const { _electron } = require('playwright');
   const prefix = `installed-update-${releasedUpdater ? 'baseline' : 'current'}-${fromVersion}-to-${toVersion}`;
   const traceFile = path.join(OUTPUT, `${prefix}-trace.json`);
+  const traceDirectory = await fs.mkdtemp(path.join(OUTPUT, `${prefix}-snapshots-`));
+  const traceHelperPath = path.join(__dirname, 'trace-snapshots.cjs');
   const helperStdout = path.join(OUTPUT, `${prefix}-helper-stdout.txt`);
   const helperStderr = path.join(OUTPUT, `${prefix}-helper-stderr.txt`);
   const environment = { ...process.env };
@@ -272,7 +275,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   const parentExit = { observed: false, code: null, signal: null };
   parent.once('exit', (code, signal) => { Object.assign(parentExit, { observed: true, code, signal }); });
   let trace;
-  const readTrace = async () => { trace = JSON.parse(await fs.readFile(traceFile, 'utf8')); return trace; };
+  const readTrace = async () => { trace = await readLatestTrace(traceDirectory); return trace; };
   const checkFailure = async () => {
     const current = await readTrace();
     if (current.result && !current.result.message.includes('설치 파일 검증 완료')) throw new Error(`Released updater did not hand off: ${current.result.message}`);
@@ -303,10 +306,8 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
       const updateRoot = path.join(app.getPath('userData'), 'updates');
       const existingStages = new Set(fs.existsSync(updateRoot) ? fs.readdirSync(updateRoot) : []);
       const trace = { sourcePath, sourceHash, cwd: process.cwd(), parentPid: process.pid, currentVersion: app.getVersion(), reportedUpdaterVersion: fixture.reportedCurrentVersion || app.getVersion(), requests: [], stageDirectories: [], result: null, helper: null };
-      const persist = () => {
-        fs.writeFileSync(fixture.traceFile + '.tmp', JSON.stringify(trace, null, 2));
-        fs.renameSync(fixture.traceFile + '.tmp', fixture.traceFile);
-      };
+      const writeTrace = require(fixture.traceHelperPath).createTraceWriter(fixture.traceDirectory);
+      const persist = () => writeTrace(trace);
       const tag = `v${fixture.toVersion}`;
       const name = path.basename(fixture.installer);
       const assetUrl = `https://github.com/samueltoken/Allradione/releases/download/${tag}/${name}`;
@@ -378,7 +379,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
       });
       persist();
       return { sourceHash, pid: process.pid, cwd: process.cwd(), executable: app.getPath('exe'), userData: app.getPath('userData') };
-    }, { installer, toVersion, digest, traceFile, reportedCurrentVersion, legacyDiagnostic, helperStdout, helperStderr });
+    }, { installer, toVersion, digest, traceFile, traceDirectory, traceHelperPath, reportedCurrentVersion, legacyDiagnostic, helperStdout, helperStderr });
     assert.equal(actual.sourceHash, expectedSourceHash, 'The updater must be the exact source from the tested installed build');
     assert.ok(await sameWindowsFile(actual.cwd, path.dirname(executable)), 'Real app updater must inherit the installed working directory');
     assert.ok(await sameWindowsFile(actual.executable, executable), 'Updater must run inside the installed baseline executable');
@@ -430,6 +431,9 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   } finally {
     await application.close().catch(() => {});
     await stopOwnedRestart(executable).catch(() => {});
+    // Publish the convenient single-file artifact only after its writer exits.
+    // Keep the immutable snapshots even if final artifact writing fails.
+    await readTrace().then(value => fs.writeFile(traceFile, JSON.stringify(value, null, 2))).catch(() => {});
   }
 }
 
