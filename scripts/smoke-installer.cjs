@@ -252,8 +252,38 @@ async function downloadBaselineInstaller(destination) {
   assert.ok(bytes > 1024, 'Baseline installer download must contain a real executable');
 }
 
-async function assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable }) {
-  assert.equal(await exists(desktopShortcut), false, 'An owned legacy Desktop .lnk must be removed');
+async function desktopFailureDiagnostics({ desktopExe, desktopShortcut, executable, phase }) {
+  const prefix = `desktop-${phase}`;
+  const manager = path.join(path.dirname(executable), 'resources', 'desktop-launcher.exe');
+  const statusFile = path.join(path.dirname(executable), 'desktop-launcher-status.txt');
+  const collect = async label => {
+    const snapshot = await windowsSnapshot();
+    const backups = (await fs.readdir(path.dirname(desktopExe))).filter(name => /^\.Allradione-desktop-.*\.bak$/i.test(name));
+    const metadata = [];
+    for (const file of [desktopShortcut, desktopExe, manager, statusFile, ...backups.map(name => path.join(path.dirname(desktopExe), name))]) {
+      try {
+        const stat = await fs.lstat(file);
+        metadata.push({ path: file, canonical: await canonicalPath(file).catch(() => null), size: stat.size, mode: stat.mode, modified: stat.mtime.toISOString(), symlink: stat.isSymbolicLink() });
+        if (stat.isFile() && stat.size <= 8 * 1024 * 1024 && (file === desktopShortcut || file === statusFile || backups.includes(path.basename(file)))) {
+          await fs.copyFile(file, path.join(OUTPUT, `${prefix}-${label}-${path.basename(file)}`));
+        }
+      } catch (error) { metadata.push({ path: file, error: error.code || error.message }); }
+    }
+    const shortcuts = await Promise.all(snapshot.shortcutTargets.map(async link => ({ ...link, canonicalTarget: await canonicalPath(link.target).catch(() => null) })));
+    return { metadata, shortcuts, nativeLaunchers: snapshot.existingLaunchers, managerStatus: await fs.readFile(statusFile, 'utf8').catch(() => null) };
+  };
+  const diagnostic = { phase, before: await collect('before') };
+  // Failure-only diagnosis: never turn this retry into a passing migration assertion.
+  try { diagnostic.retry = await runProcess(manager, ['--install-desktop', '--quiet'], { timeout: 15000, captureOutput: true }); }
+  catch (error) { diagnostic.retry = { exitCode: error.exitCode, stdout: error.stdout, stderr: error.stderr, error: error.message }; }
+  diagnostic.after = await collect('after');
+  await fs.writeFile(path.join(OUTPUT, `${prefix}-failure.json`), JSON.stringify(diagnostic, null, 2));
+}
+
+async function assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase = 'unknown' }) {
+  const legacyPresent = await exists(desktopShortcut);
+  if (legacyPresent) await desktopFailureDiagnostics({ desktopExe, desktopShortcut, executable, phase }).catch(async error => { await fs.writeFile(path.join(OUTPUT, `desktop-${phase}-diagnostic-error.txt`), error.stack || error.message); });
+  assert.equal(legacyPresent, false, `An owned legacy Desktop .lnk must be removed (${phase}; failure-only diagnostics retained)`);
   const file = await fs.open(desktopExe, 'r');
   const magic = Buffer.alloc(2);
   try { await file.read(magic, 0, 2, 0); } finally { await file.close(); }
@@ -261,6 +291,54 @@ async function assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executab
   await runProcess(desktopExe, [], { timeout: 30000 });
   await poll(async () => (await ownedProcesses(await windowsSnapshot(), executable)).some(process => process.windowHandle !== 0), 'native Desktop launcher opens the actual installed application');
   await stopOwnedRestart(executable);
+}
+
+async function assertOwnedLinkLockRetry({ desktopExe, desktopShortcut, executable, temporary }) {
+  const ready = path.join(temporary, 'owned-link-lock-ready');
+  const release = path.join(temporary, 'owned-link-lock-release');
+  const environment = { ...process.env, ALLRADIONE_QA_LINK: desktopShortcut, ALLRADIONE_QA_TARGET: await canonicalPath(executable), ALLRADIONE_QA_READY: ready, ALLRADIONE_QA_RELEASE: release };
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($env:ALLRADIONE_QA_LINK)
+    $link.TargetPath = $env:ALLRADIONE_QA_TARGET
+    $link.Save()
+    $lock = [System.IO.File]::Open($env:ALLRADIONE_QA_LINK, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+      [System.IO.File]::WriteAllText($env:ALLRADIONE_QA_READY, 'ready')
+      $deadline = [DateTime]::UtcNow.AddSeconds(15)
+      while(-not [System.IO.File]::Exists($env:ALLRADIONE_QA_RELEASE)) {
+        if([DateTime]::UtcNow -gt $deadline) { throw 'Controlled link lock timed out' }
+        [System.Threading.Thread]::Sleep(25)
+      }
+    } finally { $lock.Dispose() }
+  `;
+  const holder = runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 20000, env: environment, captureOutput: true }).then(output => ({ output }), error => ({ error }));
+  let manager;
+  try {
+    await poll(() => exists(ready), 'controlled owned shortcut lock becomes ready', 10000);
+    let settled = false;
+    manager = runProcess(path.join(path.dirname(executable), 'resources', 'desktop-launcher.exe'), ['--install-desktop', '--quiet'], { timeout: 15000, captureOutput: true }).then(output => ({ output }), error => ({ error })).finally(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const finishedDuringLock = settled;
+    await fs.writeFile(release, 'release');
+    const holderResult = await holder;
+    if (holderResult.error) throw holderResult.error;
+    const managerResult = await manager;
+    if (managerResult.error) throw managerResult.error;
+    assert.equal(finishedDuringLock, false, 'Native manager must retry while the owned link is locked');
+    assert.equal(await exists(desktopShortcut), false, 'Native retry must remove the owned link after the lock is released');
+    assert.equal((await fs.readFile(desktopExe)).subarray(0, 2).toString('ascii'), 'MZ', 'Native Desktop launcher must survive the retry');
+    return { check: 'native manager waits through a controlled one-second owned shortcut lock and completes migration', passed: true, exitCode: managerResult.output.exitCode };
+  } catch (error) {
+    const managerStatus = await fs.readFile(path.join(path.dirname(executable), 'desktop-launcher-status.txt'), 'utf8').catch(() => null);
+    await fs.writeFile(path.join(OUTPUT, 'desktop-controlled-lock-failure.json'), JSON.stringify({ error: error.message, exitCode: error.exitCode, stdout: error.stdout, stderr: error.stderr, managerStatus, legacyLinkPresent: await exists(desktopShortcut), desktopExePresent: await exists(desktopExe) }, null, 2));
+    throw error;
+  } finally {
+    await fs.writeFile(release, 'release').catch(() => {});
+    await holder;
+    if (manager) await manager;
+  }
 }
 
 async function main() {
@@ -323,8 +401,9 @@ async function main() {
     const firstInstall = await windowsSnapshot();
     assert.equal(firstInstall.installations.length, 1, 'The installer must register exactly one uninstall entry');
     await assertShortcutTarget(firstInstall, menuShortcut, executable, 'Start menu shortcut must target the installed executable');
-    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable });
+    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'fresh' });
     results.push({ check: 'fresh latest install, custom path with spaces and real native Desktop launch', version: packageJson.version, passed: true });
+    results.push(await assertOwnedLinkLockRetry({ desktopExe, desktopShortcut, executable, temporary }));
 
     await withInstalledApp(executable, async (application, page) => {
       const actualData = await application.evaluate(({ app }) => app.getPath('userData'));
@@ -383,7 +462,7 @@ async function main() {
     results.push(await exerciseUpdateHandoff({ installer: setupCopy, executable, userData, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, releasedUpdater }));
     assert.equal(await exists(obsolete), false, 'Upgrade must remove obsolete files from the installer-owned application directory');
     assert.equal(await fs.readFile(path.join(unrelatedDirectory, 'keep.txt'), 'utf8'), 'Never follow this junction during uninstall.', 'Upgrade must preserve unrelated outside files');
-    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable });
+    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'after-v020-upgrade' });
     await withInstalledApp(executable, async (_application, page) => {
       assert.equal(await page.evaluate(() => window.allradione.version()), packageJson.version, 'Upgraded app must report the new version');
       const preferences = await page.evaluate(() => window.allradione.getPreferences());
