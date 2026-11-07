@@ -233,6 +233,124 @@ async function exerciseUpdateHandoff({ installer, executable, userData, fromVers
   }
 }
 
+async function exerciseReleasedAppUpdate({ installer, executable, userData, fromVersion, toVersion, releasedUpdater }) {
+  const { _electron } = require('playwright');
+  const prefix = `installed-update-${fromVersion}-to-${toVersion}`;
+  const traceFile = path.join(OUTPUT, `${prefix}-trace.json`);
+  const environment = { ...process.env };
+  for (const key of ['ELECTRON_RUN_AS_NODE', 'ALLRADIONE_DEV_URL', 'PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR']) delete environment[key];
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of createReadStream(installer)) hash.update(chunk);
+  const digest = hash.digest('hex');
+  const beforeSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
+  // Match a normal Start-menu launch: an inherited helper working directory inside
+  // the installation must not be concealed by launching the app from the checkout.
+  const application = await _electron.launch({ executablePath: executable, args: [], cwd: path.dirname(executable), env: environment, timeout: 30000 });
+  const parent = application.process();
+  const parentExit = { observed: false, code: null, signal: null };
+  parent.once('exit', (code, signal) => { Object.assign(parentExit, { observed: true, code, signal }); });
+  let trace;
+  const readTrace = async () => { trace = JSON.parse(await fs.readFile(traceFile, 'utf8')); return trace; };
+  const checkFailure = async () => {
+    const current = await readTrace();
+    if (current.result && !current.result.message.includes('설치 파일 검증 완료')) throw new Error(`Released updater did not hand off: ${current.result.message}`);
+    for (const stage of current.stageDirectories) {
+      const errorFile = path.join(stage, 'update-error.txt');
+      if (await exists(errorFile)) {
+        const message = (await fs.readFile(errorFile, 'utf8')).replace(/^\ufeff/, '').slice(0, 16000);
+        await fs.writeFile(path.join(OUTPUT, `${prefix}-error.txt`), message);
+        throw new Error(`Released app update failed: ${message}`);
+      }
+    }
+  };
+  try {
+    const page = await application.firstWindow();
+    await page.locator('.desktop-shell').waitFor({ timeout: 30000 });
+    assert.equal(await page.evaluate(() => window.allradione.version()), fromVersion, 'Exercise the real released application before upgrading');
+    const actual = await application.evaluate(({ app, ipcMain, shell }, fixture) => {
+      // Playwright evaluates in the real Electron main process. Its CJS entry point
+      // resolves the packaged updater without copying or rewriting any source.
+      const require = process.mainModule.require.bind(process.mainModule);
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const crypto = require('node:crypto');
+      const { Readable } = require('node:stream');
+      const sourcePath = path.join(app.getAppPath(), 'electron', 'updater.cjs');
+      const sourceHash = crypto.createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex');
+      const updateRoot = path.join(app.getPath('userData'), 'updates');
+      const existingStages = new Set(fs.existsSync(updateRoot) ? fs.readdirSync(updateRoot) : []);
+      const trace = { sourcePath, sourceHash, cwd: process.cwd(), parentPid: process.pid, currentVersion: app.getVersion(), requests: [], stageDirectories: [], result: null };
+      const persist = () => {
+        fs.writeFileSync(fixture.traceFile + '.tmp', JSON.stringify(trace, null, 2));
+        fs.renameSync(fixture.traceFile + '.tmp', fixture.traceFile);
+      };
+      const tag = `v${fixture.toVersion}`;
+      const name = path.basename(fixture.installer);
+      const assetUrl = `https://github.com/samueltoken/Allradione/releases/download/${tag}/${name}`;
+      const latestUrl = 'https://api.github.com/repos/samueltoken/Allradione/releases/latest';
+      const release = { tag_name: tag, draft: false, prerelease: false, assets: [{ name, state: 'uploaded', browser_download_url: assetUrl, digest: `sha256:${fixture.digest}` }] };
+      const updater = require(sourcePath).createUpdater({
+        app, shell, dataDir: app.getPath('userData'),
+        // Only the transport is controlled: stream the genuine newly built NSIS
+        // installer through the released downloader and its real SHA256 validation.
+        fetchImpl: async url => {
+          trace.requests.push(url === latestUrl ? 'release metadata fixture' : url === assetUrl ? 'local built installer stream' : 'unexpected URL');
+          trace.stageDirectories = fs.existsSync(updateRoot) ? fs.readdirSync(updateRoot).filter(name => !existingStages.has(name) && /^release-/.test(name)).map(name => path.join(updateRoot, name)) : [];
+          persist();
+          if (url === latestUrl) return new Response(JSON.stringify(release));
+          if (url === assetUrl) return new Response(Readable.toWeb(fs.createReadStream(fixture.installer)), { headers: { 'content-length': String(fs.statSync(fixture.installer).size) } });
+          throw new Error('Unexpected request outside the controlled release fixture');
+        },
+      });
+      for (const channel of ['update:check', 'update:install']) ipcMain.removeHandler(channel);
+      ipcMain.handle('update:check', () => updater.checkUpdate());
+      ipcMain.handle('update:install', async () => {
+        const result = await updater.installUpdate();
+        trace.result = result; persist();
+        return result;
+      });
+      persist();
+      return { sourceHash, cwd: process.cwd(), executable: app.getPath('exe'), userData: app.getPath('userData') };
+    }, { installer, toVersion, digest, traceFile });
+    assert.equal(actual.sourceHash, releasedUpdater.sha256, 'The updater must be the exact source extracted from the SHA256-pinned released app');
+    assert.ok(await sameWindowsFile(actual.cwd, path.dirname(executable)), 'Real app updater must inherit the installed working directory');
+    assert.ok(await sameWindowsFile(actual.executable, executable), 'Updater must run inside the installed baseline executable');
+    assert.ok(await sameWindowsFile(actual.userData, userData), 'Updater must use the genuine installed profile');
+    await page.locator('[data-action="settings"]').click();
+    await page.locator('[data-action="check-update"]').click();
+    await page.locator('[data-action="install-update"]').waitFor({ timeout: 30000 });
+    assert.match(await page.locator('[data-action="install-update"]').innerText(), /다운로드 및 설치/, 'Released Settings must offer the native installer action');
+    await page.screenshot({ path: path.join(OUTPUT, `${prefix}-before.png`) });
+    await page.locator('[data-action="install-update"]').click();
+    await poll(async () => { await checkFailure(); return parentExit.observed; }, 'actual released application exits after its own updater handoff', 60000);
+    assert.equal(parentExit.code, 0, 'Released updater must quit the original application normally');
+    await checkFailure();
+    assert.equal(trace.stageDirectories.length, 1, 'The released downloader must create one actual update stage');
+    const stage = trace.stageDirectories[0];
+    let restarted = [];
+    let upgraded;
+    await poll(async () => {
+      await checkFailure();
+      const snapshot = await windowsSnapshot();
+      restarted = (await ownedProcesses(snapshot, executable)).filter(process => process.pid !== parent.pid && process.windowHandle !== 0);
+      upgraded = snapshot.installations.find(installation => installation.version === toVersion && sameWindowsPath(installation.directory, path.dirname(executable)));
+      return restarted.length > 0 && Boolean(upgraded) && !(await exists(stage));
+    }, 'actual released updater installs, restarts the new version at its original location and cleans its stage', 180000);
+    const installedPackage = JSON.parse(require('@electron/asar').extractFile(path.join(path.dirname(executable), 'resources', 'app.asar'), 'package.json').toString('utf8'));
+    assert.equal(installedPackage.version, toVersion, 'Restarted executable must have the new packaged application');
+    const afterSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
+    for (const key of ['volume', 'favorites', 'recent', 'widgetEnabled', 'widgetSize', 'reducedMotion', 'lastCountry']) assert.deepEqual(afterSettings[key], beforeSettings[key], `Actual app update must preserve ${key}`);
+    await stopOwnedRestart(executable);
+    return { check: 'actual released app Settings update downloads, validates, exits, installs and restarts', passed: true, fromVersion, toVersion, updaterSource: releasedUpdater.source, updaterSha256: actual.sourceHash, originalPid: parent.pid, parentExit, workingDirectory: actual.cwd, restartPids: restarted.map(process => process.pid), originalInstallLocationPreserved: true, settingsPreserved: true, stageRemoved: true, transport: 'controlled metadata and local real NSIS bytes; production downloader, spawn and quit' };
+  } catch (error) {
+    await fs.writeFile(path.join(OUTPUT, `${prefix}-failure.json`), JSON.stringify({ error: error.message, parentPid: parent.pid, parentExit, trace: await readTrace().catch(() => null), snapshot: await windowsSnapshot().catch(() => null) }, null, 2));
+    throw error;
+  } finally {
+    await application.close().catch(() => {});
+    await stopOwnedRestart(executable).catch(() => {});
+  }
+}
+
 async function downloadBaselineInstaller(destination) {
   console.log(`Downloading SHA256-pinned released installer v${BASELINE_VERSION} for upgrade verification.`);
   const response = await fetch(BASELINE_URL, { signal: AbortSignal.timeout(180000) });
@@ -459,7 +577,7 @@ async function main() {
     await fs.writeFile(path.join(unownedStage, 'keep.txt'), 'Unmarked data must be preserved.');
     await fs.mkdir(unrelatedDirectory);
     await fs.writeFile(path.join(unrelatedDirectory, 'keep.txt'), 'Never follow this junction during uninstall.');
-    results.push(await exerciseUpdateHandoff({ installer: setupCopy, executable, userData, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, releasedUpdater }));
+    results.push(await exerciseReleasedAppUpdate({ installer: setupCopy, executable, userData, fromVersion: BASELINE_VERSION, toVersion: packageJson.version, releasedUpdater }));
     assert.equal(await exists(obsolete), false, 'Upgrade must remove obsolete files from the installer-owned application directory');
     assert.equal(await fs.readFile(path.join(unrelatedDirectory, 'keep.txt'), 'utf8'), 'Never follow this junction during uninstall.', 'Upgrade must preserve unrelated outside files');
     await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'after-v020-upgrade' });

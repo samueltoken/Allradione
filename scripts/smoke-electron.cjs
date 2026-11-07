@@ -299,6 +299,79 @@ async function assertCacheControls(main) {
   results.push({ check: 'cache clear action preserves settings, favorites and unrelated files', beforeBytes: before.totalBytes, afterBytes: after.totalBytes, metadataBefore: before.metadataBytes, metadataAfter: after.metadataBytes });
 }
 
+async function assertUpdateControls(main) {
+  // Exercise the real preload/IPC/renderer path with explicit release-state fixtures.
+  // No production update handler, download, shell launch or app quit runs in this check.
+  const errorCount = rendererErrors.length;
+  await application.evaluate(({ ipcMain, app }) => {
+    globalThis.__allradioneUpdateQa = { available: false, outcome: 'retry', checks: 0, installs: 0, resolve: null };
+    for (const channel of ['update:check', 'update:install']) ipcMain.removeHandler(channel);
+    ipcMain.handle('update:check', () => {
+      const qa = globalThis.__allradioneUpdateQa;
+      qa.checks++;
+      return { available: qa.available, version: '99.0.0', currentVersion: app.getVersion(), mode: 'installer', url: 'https://github.com/samueltoken/Allradione/releases', message: qa.available ? '새 버전을 사용할 수 있어.' : '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.' };
+    });
+    ipcMain.handle('update:install', () => {
+      const qa = globalThis.__allradioneUpdateQa;
+      qa.installs++;
+      if (qa.outcome === 'hold') return new Promise(resolve => { qa.resolve = resolve; });
+      return qa.outcome === 'installing'
+        ? { status: 'installing', message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' }
+        : { status: 'retry', message: '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.' };
+    });
+  });
+  try {
+    await main.locator('[data-action="settings"]').click();
+    await main.locator('[data-action="check-update"]').click();
+    await expect(main.locator('#update-message')).toHaveText('업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.');
+    await expect(main.locator('[data-action="check-update"]')).toBeEnabled();
+    await expect(main.locator('[data-action="install-update"]')).toHaveCount(0);
+
+    await application.evaluate(() => { globalThis.__allradioneUpdateQa.available = true; });
+    await main.locator('[data-action="check-update"]').click();
+    const install = main.locator('[data-action="install-update"]');
+    await expect(install).toContainText('다운로드 및 설치');
+    await install.click();
+    await expect(install).toContainText('다시 시도');
+    await expect(install).toBeEnabled();
+    await expect(install).not.toContainText('완료');
+    await expect(main.locator('#update-message')).toHaveText('업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.');
+
+    await application.evaluate(() => { globalThis.__allradioneUpdateQa.outcome = 'hold'; });
+    await install.click();
+    await expect(install).toBeDisabled();
+    await expect.poll(() => application.evaluate(() => typeof globalThis.__allradioneUpdateQa.resolve === 'function'), { timeout: TIMEOUT }).toBe(true);
+    await main.keyboard.press('Escape');
+    await expect(main.locator('#update-message')).toHaveCount(0);
+    await application.evaluate(() => {
+      const qa = globalThis.__allradioneUpdateQa;
+      qa.resolve({ status: 'retry', message: '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.' });
+      qa.resolve = null;
+    });
+    // Let the renderer receive and finish the pending IPC reply after modal removal.
+    await main.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(rendererErrors.slice(errorCount), [], 'Closing Settings during an update must not cause a renderer error');
+
+    await application.evaluate(() => { globalThis.__allradioneUpdateQa.outcome = 'installing'; });
+    await main.locator('[data-action="settings"]').click();
+    await main.locator('[data-action="check-update"]').click();
+    await install.click();
+    await expect(install).toContainText('설치 및 재시작 중');
+    await expect(install).toBeDisabled();
+    await expect(main.locator('#update-message')).toHaveText('설치 파일 검증 완료. 업데이트 후 다시 시작할게.');
+    await main.screenshot({ path: path.join(OUTPUT, 'settings-update-ui-fixture.png') });
+    await main.keyboard.press('Escape');
+    const calls = await application.evaluate(() => ({ checks: globalThis.__allradioneUpdateQa.checks, installs: globalThis.__allradioneUpdateQa.installs }));
+    assert.deepEqual(calls, { checks: 3, installs: 3 }, 'Each button action must invoke one matching native IPC handler');
+    results.push({ check: 'explicit update UI fixture: pending release, retry, modal close and install handoff', ...calls, installerExecuted: false, externalPageOpened: false });
+  } finally {
+    await application.evaluate(({ ipcMain }) => {
+      for (const channel of ['update:check', 'update:install']) ipcMain.removeHandler(channel);
+      delete globalThis.__allradioneUpdateQa;
+    });
+  }
+}
+
 async function captureCountryAndPlayback(main) {
   const probe = { check: 'optional live directory and playback', attempted: false, country: null, playback: 'not attempted', attempts: [] };
   try {
@@ -453,6 +526,7 @@ async function run() {
   await main.screenshot({ path: path.join(OUTPUT, 'settings.png') });
   await main.keyboard.press('Escape');
   await assertCacheControls(main);
+  await assertUpdateControls(main);
 
   await main.evaluate(() => window.allradione.setWidget(true, 'small'));
   const small = await findWidget('small');

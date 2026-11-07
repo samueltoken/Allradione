@@ -14,7 +14,7 @@ export interface AllradioneBridge {
  publishPlayer(state:PlayerState):void; onPlayer(fn:(state:PlayerState)=>void):()=>void;
  sendCommand(command:string,value?:unknown):void; onCommand(fn:(command:string,value?:unknown)=>void):()=>void;
  windowAction(action:'minimize'|'maximize'|'close'|'show'):void;
- checkUpdate():Promise<UpdateInfo>; installUpdate():Promise<{message:string}>;
+ checkUpdate():Promise<UpdateInfo>; installUpdate():Promise<{status:'retry'|'installing'|'opened'|'current';message:string}>;
  cacheInfo():Promise<CacheInfo>; clearCache():Promise<CacheResult>;
  createDesktopShortcut():Promise<{created:boolean;message:string}>;
  openExternal(url:string):Promise<void>; version():Promise<string>;

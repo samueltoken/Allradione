@@ -38,6 +38,7 @@ const safeNotices=new Set([
  '검증 완료. 새 버전으로 다시 시작할게.',
  '릴리즈 페이지를 열었어. 새 설치 파일을 내려받아 실행해줘.',
  '설치 파일 검증 완료. 업데이트 후 다시 시작할게.',
+ '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.',
  '아직 새 릴리즈가 없어.','릴리즈 페이지에서 새 버전을 다운로드해줘.'
 ]);
 function userMessage(value:unknown,fallback:string):string{
@@ -71,7 +72,7 @@ let player:RadioPlayer;
 let current:PlayerState={station:null,playing:false,status:'idle',volume:.65};
 let lastRecent='';
 let toastTimer:ReturnType<typeof setTimeout>|undefined;
-let version='0.2.1';
+let version='0.2.2';
 let nativeVisible=true;
 let settingsOpen=false;
 let countryDialogOpen=false;
@@ -239,7 +240,20 @@ function renderCountryResults(q:string){const target=document.querySelector('#co
 async function openSettings(){try{preferences={...preferences,...await bridge.getPreferences()};}catch{}settingsOpen=true;countryDialogOpen=false;modalFrame('Settings.',`<div class="settings-body"><section class="setting-section"><div class="setting-row"><div><h3>위젯 모드</h3><p>다른 창 위에서 계속 듣기</p></div><label class="switch"><input id="widget-toggle" type="checkbox" ${preferences.widgetEnabled?'checked':''} aria-label="위젯 모드"><span></span></label></div><div class="widget-size-options"><label class="size-choice"><input type="radio" name="widget-size" value="small" ${preferences.widgetSize==='small'?'checked':''}><span class="widget-preview small-preview"><i></i><i></i><i></i><i></i><b></b></span><strong>MINIMAL</strong><small>작은 원형</small></label><label class="size-choice"><input type="radio" name="widget-size" value="medium" ${preferences.widgetSize==='medium'?'checked':''}><span class="widget-preview medium-preview"><i>65<small>VOL</small></i><span class="preview-arc"></span><b></b></span><strong>RECEIVER</strong><small>중간 직사각형</small></label></div></section><section class="setting-section"><div class="setting-row"><div><h3>애니메이션 줄이기</h3></div><label class="switch"><input id="motion-toggle" type="checkbox" ${preferences.reducedMotion?'checked':''} aria-label="애니메이션 줄이기"><span></span></label></div><div class="setting-row"><div><h3>취침 타이머</h3></div><select id="sleep-timer" aria-label="취침 타이머"><option value="0">끄기</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option><option value="90">90분</option></select></div></section><section class="setting-section maintenance-section"><div class="setting-row"><div><h3>캐시</h3><p id="cache-size">확인 중</p></div><button class="outline-button" data-action="cache-clear">${icon('reset',16)} 캐시 정리</button></div><p class="update-message" id="cache-message" role="status"></p><div class="setting-row shortcut-row"><div><h3>바탕화면 실행 파일</h3></div><button class="outline-button" data-action="desktop-shortcut">${icon('plus',16)} 만들기</button></div></section><section class="setting-section update-section"><div class="setting-row"><div><h3>업데이트</h3><p>현재 버전 <span id="current-version">${esc(version)}</span></p></div><button class="outline-button" data-action="check-update">${icon('reset',16)} 업데이트 확인</button></div><p class="update-message" id="update-message" role="status"></p></section><footer class="settings-footer"><span>Allradione <b>© 2026</b></span><button class="text-button" data-action="github">OPEN SOURCE ${icon('external',14)}</button></footer></div>`);void refreshCacheSize();}
 async function changeWidget(enabled:boolean,size:WidgetSize){try{await bridge.setWidget(enabled,size);await save({widgetEnabled:enabled,widgetSize:size});player?.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.querySelectorAll('[data-action="widget"]').forEach(el=>el.classList.toggle('active',enabled));if(settingsOpen){const toggle=document.querySelector<HTMLInputElement>('#widget-toggle');if(toggle)toggle.checked=enabled;}if(enabled)toast(size==='small'?'작은 위젯을 켰어.':'리시버 위젯을 켰어.');}catch(error){const toggle=document.querySelector<HTMLInputElement>('#widget-toggle');if(toggle)toggle.checked=preferences.widgetEnabled;toast(userMessage(error,'위젯을 열지 못했어. 다시 시도해줘.'));}}
 async function checkUpdate(button:HTMLButtonElement){button.disabled=true;button.innerHTML=icon('reset',16)+' 확인 중';const message=document.querySelector<HTMLElement>('#update-message')!;try{const info=await bridge.checkUpdate();updateMode=info.mode;message.textContent=info.available?`v${info.version} 업데이트가 있어.`:userMessage(info.message,'업데이트를 확인하지 못했어. 잠시 후 다시 시도해줘.');button.dataset.action=info.available?'install-update':'check-update';button.innerHTML=icon(info.available?'arrow':'check',16)+(info.available?(updateMode==='installer'?'다운로드 및 설치':'업데이트하기'):'다시 확인');}catch(error){message.textContent=userMessage(error,'업데이트를 확인하지 못했어. 인터넷 연결을 확인해줘.');button.innerHTML=icon('reset',16)+' 다시 확인';}finally{button.disabled=false;}}
-async function installUpdate(button:HTMLButtonElement){button.disabled=true;button.innerHTML=icon('reset',16)+(updateMode==='installer'?'설치 파일 다운로드 중':'다운로드 중');try{const result=await bridge.installUpdate();const notice=userMessage(result.message,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.');document.querySelector('#update-message')!.textContent=notice;const failed=/못했|실패|권한|검증하지/.test(notice);button.innerHTML=icon(failed?'reset':'check',16)+(failed?' 다시 시도':' 완료');}catch(error){document.querySelector('#update-message')!.textContent=userMessage(error,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.');button.innerHTML=icon('reset',16)+' 다시 시도';}finally{button.disabled=false;}}
+async function installUpdate(button:HTMLButtonElement){
+ button.disabled=true;button.innerHTML=icon('reset',16)+(updateMode==='installer'?'설치 파일 다운로드 중':'다운로드 중');
+ let restarting=false;
+ const showMessage=(message:string)=>{const target=document.querySelector('#update-message');if(target)target.textContent=message;};
+ try{
+  const result=await bridge.installUpdate();
+  showMessage(userMessage(result.message,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.'));
+  restarting=result.status==='installing';
+  if(restarting)button.innerHTML=icon('reset',16)+' 설치 및 재시작 중';
+  else if(result.status==='retry')button.innerHTML=icon('reset',16)+' 다시 시도';
+  else{button.dataset.action='check-update';button.innerHTML=icon('reset',16)+' 다시 확인';}
+ }catch(error){showMessage(userMessage(error,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.'));button.innerHTML=icon('reset',16)+' 다시 시도';}
+ finally{button.disabled=restarting;}
+}
 
 
 function formatBytes(bytes:number){if(bytes<1024)return `${Math.max(0,bytes)} B`;if(bytes<1024*1024)return `${(bytes/1024).toFixed(1)} KB`;if(bytes<1024*1024*1024)return `${(bytes/1024/1024).toFixed(1)} MB`;return `${(bytes/1024/1024/1024).toFixed(2)} GB`;}

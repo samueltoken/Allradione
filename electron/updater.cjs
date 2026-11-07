@@ -11,6 +11,7 @@ const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
 const DOWNLOAD_HOSTS = new Set(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const MAX_EXE_BYTES = 768 * 1024 * 1024;
+const HELPER_READY = 'ALLRADIONE_UPDATER_READY';
 
 function parseVersion(value) {
   if (typeof value !== 'string') return null;
@@ -42,7 +43,7 @@ function selectAsset(release) {
   const version = parseVersion(release?.tag_name);
   if (!version || release.draft || release.prerelease || !Array.isArray(release.assets)) return null;
   const name = `Allradione-Setup-${version.join('.')}-x64.exe`;
-  return release.assets.find(asset => asset.name === name && allowedAssetUrl(asset.browser_download_url, release.tag_name, name)) || null;
+  return release.assets.find(asset => asset.name === name && (asset.state === undefined || asset.state === 'uploaded') && allowedAssetUrl(asset.browser_download_url, release.tag_name, name)) || null;
 }
 
 function normalizeDigest(value) {
@@ -104,6 +105,53 @@ async function readLimited(response, limit) {
 
 function psLiteral(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 
+function waitForHelperReady(child, { timeoutMs = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!child.stdout || !child.stderr) { reject(new Error('업데이트 도우미 응답 통로를 열지 못했어.')); return; }
+    let pending = '', received = 0, settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout.removeListener('data', onData);
+      child.stderr.removeListener('data', onStderr);
+      child.removeListener('error', onError);
+      child.removeListener('exit', onExit);
+      child.stdout.resume();
+      child.stderr.resume();
+      if (error) reject(error); else resolve();
+    };
+    const onData = chunk => {
+      received += chunk.length;
+      if (received > 64 * 1024) { finish(new Error('업데이트 도우미 응답을 확인하지 못했어.')); return; }
+      pending += chunk.toString('utf8');
+      const lines = pending.split(/\r?\n/); pending = lines.pop();
+      if (lines.includes(HELPER_READY)) finish();
+      else if (pending.length > 4096) finish(new Error('업데이트 도우미 응답을 확인하지 못했어.'));
+    };
+    // Drain stderr while waiting; helper failures are reported through a controlled message.
+    const onStderr = () => {};
+    const onError = () => finish(new Error('업데이트 도우미를 실행하지 못했어.'));
+    const onExit = () => finish(new Error('업데이트 도우미가 준비되기 전에 종료됐어. 다시 시도해줘.'));
+    const timer = setTimeout(() => finish(new Error('업데이트 도우미가 응답하지 않아. 다시 시도해줘.')), timeoutMs);
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onStderr);
+    child.once('error', onError);
+    child.once('exit', onExit);
+    if (child.exitCode != null || child.signalCode != null) onExit();
+  });
+}
+
+async function stopHelper(child) {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  await new Promise(resolve => {
+    const finish = () => { clearTimeout(timer); child.removeListener('exit', finish); resolve(); };
+    const timer = setTimeout(finish, 2000);
+    child.once('exit', finish);
+    try { if (!child.kill()) finish(); } catch { finish(); }
+  });
+}
+
 function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHash }) {
   if (!Number.isSafeInteger(parentPid) || parentPid < 1 || !normalizeDigest(expectedHash)) throw new Error('Invalid updater parameters');
   // The signed-in user's NSIS installer owns file replacement, registration and restart.
@@ -112,10 +160,23 @@ function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHa
 $installer = ${psLiteral(installer)}
 $appExe = ${psLiteral(appExe)}
 $scriptPath = ${psLiteral(scriptPath)}
-$stageDir = Split-Path -Parent $installer
+$stageDir = [System.IO.Path]::GetDirectoryName($installer)
 $expected = ${psLiteral(expectedHash.toLowerCase())}
 $installed = $false
+function Test-ParentRunning {
+  try { return -not [System.Diagnostics.Process]::GetProcessById(${parentPid}).HasExited } catch { return $false }
+}
+function Find-AppProcess {
+  foreach ($candidate in [System.Diagnostics.Process]::GetProcessesByName([System.IO.Path]::GetFileNameWithoutExtension($appExe))) {
+    try {
+      if (-not $candidate.HasExited -and [string]::Equals($candidate.MainModule.FileName, $appExe, [System.StringComparison]::OrdinalIgnoreCase)) { return $candidate }
+    } catch {}
+  }
+  return $null
+}
 try {
+  # Use Windows' own module even when another PowerShell edition changed PSModulePath.
+  Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1" -ErrorAction Stop
   # Use .NET directly: inherited PSModulePath can hide Get-FileHash in Windows PowerShell.
   $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
   $installerStream = $null
@@ -127,6 +188,11 @@ try {
     $hashAlgorithm.Dispose()
   }
   if ($actualHash -ne $expected) { throw 'SHA256 mismatch' }
+  if (-not [System.IO.File]::Exists($appExe)) { throw 'Installed application was not found' }
+  # Spawn only confirms powershell.exe exists. Acknowledge successful script startup
+  # and checksum verification before the application is allowed to close.
+  [Console]::Out.WriteLine('${HELPER_READY}')
+  [Console]::Out.Flush()
   Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
   if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
   $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -ErrorAction Stop
@@ -135,29 +201,46 @@ try {
   # Wait only for NSIS. Start-Process -Wait also waits for the restarted app.
   $setup.WaitForExit()
   if ($setup.ExitCode -ne 0) { throw ('Installer failed or was canceled. Exit code: ' + $setup.ExitCode) }
+  # Explorer's shell-based launch can fail while NSIS still reports success.
+  # Give its launch a moment, then start the installed executable only if absent.
+  $restartDeadline = [DateTime]::UtcNow.AddSeconds(3)
+  $running = Find-AppProcess
+  while (-not $running -and [DateTime]::UtcNow -lt $restartDeadline) {
+    [System.Threading.Thread]::Sleep(200)
+    $running = Find-AppProcess
+  }
+  if (-not $running) {
+    Start-Process -FilePath $appExe -WorkingDirectory ([System.IO.Path]::GetDirectoryName($appExe)) -ErrorAction Stop
+    $restartDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not $running -and [DateTime]::UtcNow -lt $restartDeadline) {
+      [System.Threading.Thread]::Sleep(200)
+      $running = Find-AppProcess
+    }
+  }
+  if (-not $running) { throw 'Updated application did not restart' }
   $installed = $true
 } catch {
-  $_ | Out-String | Set-Content -LiteralPath (Join-Path $stageDir 'update-error.txt') -Encoding UTF8
-  if (Test-Path -LiteralPath $appExe) {
-    Start-Process -FilePath $appExe -WorkingDirectory (Split-Path -Parent $appExe) -ErrorAction SilentlyContinue
+  try { [System.IO.File]::WriteAllText([System.IO.Path]::Combine($stageDir, 'update-error.txt'), [string]$_, [System.Text.Encoding]::UTF8) } catch {}
+  if (-not (Test-ParentRunning) -and -not (Find-AppProcess) -and [System.IO.File]::Exists($appExe)) {
+    Start-Process -FilePath $appExe -WorkingDirectory ([System.IO.Path]::GetDirectoryName($appExe)) -ErrorAction SilentlyContinue
   }
 } finally {
-  Remove-Item -LiteralPath $installer -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
+  try { [System.IO.File]::Delete($installer) } catch {}
+  try { [System.IO.File]::Delete($scriptPath) } catch {}
   if ($installed) {
-    Remove-Item -LiteralPath (Join-Path $stageDir '${STAGE_MARKER}') -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $stageDir -ErrorAction SilentlyContinue
+    try { [System.IO.File]::Delete([System.IO.Path]::Combine($stageDir, '${STAGE_MARKER}')) } catch {}
+    try { [System.IO.Directory]::Delete($stageDir) } catch {}
   }
 }
 `;
 }
 
-function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn, scheduleQuit = callback => setTimeout(callback, 400) }) {
+function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn, helperTimeoutMs = 30000, scheduleQuit = callback => setTimeout(callback, 400) }) {
   let checked = null;
   let installing = false;
   const currentVersion = app.getVersion();
   const mode = platform === 'win32' && app.isPackaged ? (env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'installer') : 'development';
-  const result = (patch = {}) => ({ available: false, version: currentVersion, currentVersion, url: RELEASES_URL, mode, ...patch });
+  const result = (patch = {}) => ({ available: false, status: 'retry', version: currentVersion, currentVersion, url: RELEASES_URL, mode, ...patch });
 
   async function checkUpdate() {
     checked = null;
@@ -168,30 +251,34 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       const version = parseVersion(release.tag_name);
       if (!version || release.draft || release.prerelease) return result({ message: '안정 버전 릴리즈를 찾지 못했어.' });
       const url = `${RELEASES_URL}/tag/${encodeURIComponent(release.tag_name)}`;
-      if (!isNewer(release.tag_name, currentVersion)) return result({ version: version.join('.'), url, message: '최신 버전이야.' });
+      if (!isNewer(release.tag_name, currentVersion)) return result({ status: 'current', version: version.join('.'), url, message: '최신 버전이야.' });
       const asset = selectAsset(release);
+      // A release can be visible while GitHub Actions is still uploading its setup.
+      // Do not offer an install action until the matching Windows asset is ready.
+      if (!asset) return result({ version: version.join('.'), url, message: '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.' });
       checked = { release, asset, url, version: version.join('.') };
-      return result({ available: true, version: checked.version, url, ...(asset ? { assetUrl: asset.browser_download_url, assetName: asset.name, digest: normalizeDigest(asset.digest) || undefined } : {}), message: asset ? '새 버전을 사용할 수 있어.' : '릴리즈 페이지에서 새 버전을 확인할 수 있어.' });
+      return result({ available: true, status: 'available', version: checked.version, url, assetUrl: asset.browser_download_url, assetName: asset.name, digest: normalizeDigest(asset.digest) || undefined, message: '새 버전을 사용할 수 있어.' });
     } catch (error) {
       return result({ message: `업데이트를 확인하지 못했어. ${error.message}` });
     }
   }
 
   async function installUpdate() {
-    if (installing) return { message: '업데이트를 다운로드하고 있어.' };
+    if (installing) return { status: 'installing', message: '업데이트를 다운로드하고 있어.' };
     // Acquire before any await: two first-time clicks must not both check/install.
     installing = true;
     let stageDir;
+    let helper;
     let handedOff = false;
     try {
-      if (!checked) {
-        const state = await checkUpdate();
-        if (!state.available) return { message: state.message || '업데이트가 없어.' };
-      }
+      // Refresh even after an earlier check: assets may have finished uploading,
+      // been replaced or been withdrawn while the Settings window stayed open.
+      const state = await checkUpdate();
+      if (!state.available || !checked) return { status: state.status === 'current' ? 'current' : 'retry', message: state.message || '업데이트가 없어.' };
       const { release, asset, url } = checked;
-      if (platform !== 'win32' || !asset || !app.isPackaged || env.PORTABLE_EXECUTABLE_FILE) {
+      if (platform !== 'win32' || !app.isPackaged || env.PORTABLE_EXECUTABLE_FILE) {
         await shell.openExternal(url);
-        return { message: '릴리즈 페이지를 열었어. 새 설치 파일을 내려받아 실행해줘.' };
+        return { status: 'opened', message: '릴리즈 페이지를 열었어. 새 설치 파일을 내려받아 실행해줘.' };
       }
       const appExe = app.getPath('exe');
       if (!path.win32.isAbsolute(appExe) || path.win32.extname(appExe).toLowerCase() !== '.exe') throw new Error('현재 앱 실행 경로를 확인하지 못했어.');
@@ -233,27 +320,30 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
       const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
       const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const helperEnv = { ...env };
+      const blockedEnv = new Set(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH']);
+      for (const key of Object.keys(helperEnv)) if (blockedEnv.has(key.toUpperCase())) delete helperEnv[key];
       // Execute our generated literal script directly. No machine or process policy changes.
-      const child = spawnImpl(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, stdio: 'ignore' });
-      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      try { await setStageOwner(stageDir, child.pid); }
-      catch (error) {
-        // The helper is still waiting for this app, so stop our own child before
-        // abandoning its stage; it must not outlive a failed ownership handoff.
-        child.kill();
-        throw error;
-      }
-      child.unref();
+      // Its working directory must remain outside the installation being replaced.
+      helper = spawnImpl(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, windowsHide: true, cwd: dataDir, env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      await waitForHelperReady(helper, { timeoutMs: helperTimeoutMs });
+      await setStageOwner(stageDir, helper.pid);
+      helper.stdout.unref?.();
+      helper.stderr.unref?.();
+      helper.unref();
       handedOff = true;
       scheduleQuit(() => app.quit());
-      return { message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' };
+      return { status: 'installing', message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' };
     } catch (error) {
+      // The still-open app keeps the helper waiting. Stop it before deleting its
+      // installer, including when readiness or the ownership handoff failed.
+      if (!handedOff) await stopHelper(helper);
       // Only our unique staging directory is removed. Existing app/settings stay intact.
       if (stageDir) await fs.rm(stageDir, { recursive: true, force: true }).catch(() => {});
-      return { message: `업데이트를 적용하지 못했어. ${error.message}` };
+      return { status: 'retry', message: `업데이트를 적용하지 못했어. ${error.message}` };
     } finally { if (!handedOff) installing = false; }
   }
   return { checkUpdate, installUpdate };
 }
 
-module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, makeUpdateScript, readLimited, fetchResponse };
+module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, makeUpdateScript, waitForHelperReady, HELPER_READY, readLimited, fetchResponse };

@@ -1,15 +1,18 @@
 name: Publish release
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example v0.2.1)
+        description: Release tag matching this revision (for example v0.2.2)
         required: true
         type: string
 permissions:
   contents: write
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: windows-latest
@@ -17,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -27,10 +30,17 @@ jobs:
       - name: Validate release version
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           if ($env:RELEASE_TAG -ne "v$version") { throw "Tag does not match package version" }
+          $tagRefs = @(git ls-remote --tags origin "refs/tags/$($env:RELEASE_TAG)" "refs/tags/$($env:RELEASE_TAG)^{}")
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify release tag' }
+          if ($tagRefs.Count -gt 0) {
+            $peeled = @($tagRefs | Where-Object { $_ -match '\^\{\}$' })
+            $tagLine = if ($peeled.Count -gt 0) { $peeled[0] } else { $tagRefs[0] }
+            if (($tagLine -split '\s+')[0] -ne $env:GITHUB_SHA) { throw 'Release tag points to a different commit' }
+          }
       - run: npm test
       - run: npm run build
       - run: npm run test:audio
@@ -54,11 +64,31 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          $assets = Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe' }
-          $assets | ForEach-Object {
-            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$hash  $($_.Name)"
-          } | Set-Content release/SHA256SUMS.txt -Encoding utf8NoBOM
-          gh release upload $env:RELEASE_TAG $assets.FullName release/SHA256SUMS.txt --clobber
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $installer = Get-Item "release/Allradione-Setup-$version-x64.exe"
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" | Set-Content release/SHA256SUMS.txt -Encoding utf8NoBOM
+          $existing = gh release view $env:RELEASE_TAG --json isDraft,targetCommitish 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $draft = $existing | ConvertFrom-Json
+            if (-not $draft.isDraft) { throw 'Refusing to replace assets on a published release' }
+            $targetSha = gh api "repos/$($env:GITHUB_REPOSITORY)/commits/$($draft.targetCommitish)" --jq .sha
+            if ($LASTEXITCODE -ne 0 -or $targetSha -ne $env:GITHUB_SHA) { throw 'Draft release points to a different commit' }
+          } else {
+            $notes = "docs/releases/$($env:RELEASE_TAG).md"
+            $notesArgs = if (Test-Path $notes) { @('--notes-file', $notes) } else { @('--generate-notes') }
+            gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --draft --title "Allradione $($env:RELEASE_TAG)" @notesArgs
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release' }
+          }
+          gh release upload $env:RELEASE_TAG $installer.FullName release/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Could not upload verified installer and checksum' }
+          $release = gh release view $env:RELEASE_TAG --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify uploaded assets' }
+          $setupAsset = @($release.assets | Where-Object { $_.name -eq $installer.Name -and $_.state -eq 'uploaded' -and $_.size -eq $installer.Length })
+          $checksumAsset = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' -and $_.state -eq 'uploaded' -and $_.size -gt 0 })
+          if ($setupAsset.Count -ne 1 -or $checksumAsset.Count -ne 1) { throw 'Release assets are not ready' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish complete release' }
