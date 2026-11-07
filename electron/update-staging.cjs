@@ -104,7 +104,7 @@ async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive
       if (now - createdAt <= age || marker.ownerPid === process.pid || await processAlive(marker.ownerPid)) {
         summary.retained.push(entry.name); continue;
       }
-      const allowlist = new Set([marker.installerName, 'apply-update.ps1', 'update-error.txt', STAGE_MARKER]);
+      const allowlist = new Set([marker.installerName, 'apply-update.ps1', 'helper-ready.json', 'helper-ready.json.tmp', 'update-error.txt', STAGE_MARKER]);
       const files = await fs.readdir(directory, { withFileTypes: true });
       if (files.some(file => !allowlist.has(file.name) || !file.isFile() || file.isSymbolicLink())) {
         summary.retained.push(entry.name); continue;

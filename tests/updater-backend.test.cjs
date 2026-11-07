@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const syncFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -21,6 +22,15 @@ function fakeHelper() {
   child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.unref = () => {};
   child.kill = () => { child.killed = true; child.signalCode = 'SIGTERM'; child.emit('exit', null, 'SIGTERM'); return true; };
   return child;
+}
+
+function writeFakeAcknowledgement(dataDir, child) {
+  const updates = path.join(dataDir, 'updates');
+  const stage = path.join(updates, syncFs.readdirSync(updates).find(name => name.startsWith('release-')));
+  const script = syncFs.readFileSync(path.join(stage, 'apply-update.ps1'), 'utf8');
+  const token = /^\$readyToken = '([^']+)'/m.exec(script)[1];
+  const sha256 = /^\$expected = '([^']+)'/m.exec(script)[1];
+  syncFs.writeFileSync(path.join(stage, 'helper-ready.json'), JSON.stringify({ token, pid: child.pid, parentPid: process.pid, sha256 }));
 }
 
 async function windowsUpdateHarness(t, { ready = true, onSpawn, helperTimeoutMs = 30000, env = {} } = {}) {
@@ -50,7 +60,7 @@ async function windowsUpdateHarness(t, { ready = true, onSpawn, helperTimeoutMs 
       assert.equal(calls.quit, 0, 'The application must remain open until helper handoff');
       launches.push({ exe, args, options });
       const child = fakeHelper(); children.push(child);
-      process.nextTick(() => { child.emit('spawn'); onSpawn?.(child); if (ready) child.stdout.write(HELPER_READY + '\r\n'); });
+      process.nextTick(() => { child.emit('spawn'); onSpawn?.(child); if (ready) writeFakeAcknowledgement(dataDir, child); });
       return child;
     }
   });
@@ -114,8 +124,8 @@ test('updater script waits for clean exit and delegates replacement/restart to N
   assert.ok(script.indexOf('$null = $setup.Handle') < script.indexOf('$setup.WaitForExit()'));
   assert.ok(script.indexOf('$setup.WaitForExit()') > script.indexOf(setupLaunch));
   assert.ok(script.indexOf('$setup.WaitForExit()') < script.indexOf('if ($setup.ExitCode -ne 0)'));
-  assert.ok(script.indexOf('SHA256 mismatch') < script.indexOf(HELPER_READY), 'Readiness follows checksum verification');
-  assert.ok(script.indexOf(HELPER_READY) < script.indexOf('Wait-Process -Id 1234'), 'Readiness precedes waiting for the application to exit');
+  assert.ok(script.indexOf('SHA256 mismatch') < script.indexOf('$readyRecord ='), 'Readiness follows checksum verification');
+  assert.ok(script.indexOf('$readyRecord =') < script.indexOf('Wait-Process -Id 1234'), 'Readiness precedes waiting for the application to exit');
   assert.ok(script.includes('if (-not $running)'), 'A failed shell restart has a direct executable fallback');
   assert.ok(script.includes('-not (Test-ParentRunning)'), 'Preflight failures must not start a duplicate of the still-open app');
   assert.ok(!script.includes('Move-Item'));
@@ -145,6 +155,21 @@ test('helper exit before readiness and readiness timeout reject the handoff', as
   exited.exitCode = 1; exited.emit('exit', 1, null);
   await failure;
   await assert.rejects(waitForHelperReady(fakeHelper(), { timeoutMs: 10 }), /응답하지 않아/);
+});
+
+test('file readiness is independent of console stdout and bound to nonce, parent and installer hash', async t => {
+  const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-ack-test-'));
+  t.after(() => fs.rm(stage, { recursive: true, force: true }));
+  const readyFile = path.join(stage, 'helper-ready.json');
+  const options = { readyFile, readyToken: 'unique-stage-nonce', parentPid: process.pid, expectedHash: hash, timeoutMs: 1000 };
+  const child = fakeHelper();
+  const ready = waitForHelperReady(child, options);
+  await fs.writeFile(readyFile, JSON.stringify({ token: options.readyToken, pid: 1234, parentPid: process.pid, sha256: hash }));
+  assert.equal((await ready).pid, 1234, 'No console output is required');
+  for (const patch of [{ token: 'old-nonce' }, { parentPid: process.pid + 1 }, { sha256: 'd'.repeat(64) }]) {
+    await fs.writeFile(readyFile, JSON.stringify({ token: options.readyToken, pid: 1234, parentPid: process.pid, sha256: hash, ...patch }));
+    await assert.rejects(waitForHelperReady(fakeHelper(), options), /응답을 확인하지 못했어/);
+  }
 });
 
 test('detached launch uses a bounded verified bootstrap and keeps all stage paths out of cmd syntax', () => {
@@ -226,7 +251,7 @@ test('real Windows helper recognizes a running executable through a junction and
   let script = makeUpdateScript({ parentPid: process.pid, installer, appExe: aliasedExe, scriptPath, expectedHash });
   // Exercise the production process matcher before its parent wait. The live Node
   // process reports its genuine path, while appExe deliberately uses a junction.
-  script = script.replace(`[Console]::Out.WriteLine('${HELPER_READY}')`, `if (-not (Find-AppProcess)) { throw 'Live executable was not recognized through its junction alias' }\n  [Console]::Out.WriteLine('${HELPER_READY}')`);
+  script = script.replace('  $readyRecord =', "  if (-not (Find-AppProcess)) { throw 'Live executable was not recognized through its junction alias' }\n  $readyRecord =");
   await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
   const launch = makeHelperLaunch({ systemRoot: process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', scriptPath, scriptHash: crypto.createHash('sha256').update(await fs.readFile(scriptPath)).digest('hex') });
   const helperEnv = { ...process.env };
@@ -238,10 +263,14 @@ test('real Windows helper recognizes a running executable through a junction and
   child.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-8192); });
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
   try {
-    try { await waitForHelperReady(child, { timeoutMs: 15000 }); }
+    try { await waitForHelperReady(child, { timeoutMs: 15000, readyFile: path.join(stage, 'helper-ready.json'), readyToken: HELPER_READY, parentPid: process.pid, expectedHash }); }
     catch (error) {
       const helperError = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8').catch(() => '');
-      assert.fail(`Detached helper readiness failed: ${error.message}\nexit=${child.exitCode}\nstdout=${stdout}\nstderr=${stderr}\nhelperError=${helperError}`);
+      const stageFiles = await fs.readdir(stage).catch(() => []);
+      const diagnosticScript = `$all=@(Get-CimInstance Win32_Process);$ids=[System.Collections.Generic.HashSet[int]]::new();[void]$ids.Add(${child.pid});do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and $ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);@($all|Where-Object{$ids.Contains([int]$_.ProcessId)}|Select-Object ProcessId,ParentProcessId,Name,ExecutablePath)|ConvertTo-Json -Compress`;
+      const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const tree = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(diagnosticScript, 'utf16le').toString('base64')], { env: helperEnv, timeout: 5000, windowsHide: true }).then(result => result.stdout, failure => failure.message);
+      assert.fail(`Detached helper readiness failed: ${error.message}\nexit=${child.exitCode}\nstdout=${stdout}\nstderr=${stderr}\nhelperError=${helperError}\nstageFiles=${JSON.stringify(stageFiles)}\nscriptRemains=${stageFiles.includes('apply-update.ps1')}\nownedProcesses=${tree}`);
     }
     assert.equal(child.exitCode, null, 'The helper must wait after acknowledging readiness');
     assert.equal(process.kill(process.pid, 0), true, 'The original application process remains alive');
@@ -419,7 +448,7 @@ test('installed Windows downloads a verified setup then exits only after helper 
       const child = fakeHelper();
       process.nextTick(() => {
         child.emit('spawn');
-        setTimeout(() => { assert.equal(quitCount, 0, 'Spawn alone must never close the app'); child.stdout.write(HELPER_READY + '\r\n'); }, 20);
+        setTimeout(() => { assert.equal(quitCount, 0, 'Spawn alone must never close the app'); writeFakeAcknowledgement(dataDir, child); }, 20);
       });
       return child;
     }

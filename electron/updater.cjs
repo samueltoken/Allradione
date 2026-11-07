@@ -119,28 +119,29 @@ function makeHelperLaunch({ systemRoot, scriptPath, scriptHash }) {
   return { executable, args: ['/d', '/s', '/c', command] };
 }
 
-function waitForHelperReady(child, { timeoutMs = 30000 } = {}) {
+function waitForHelperReady(child, { timeoutMs = 30000, readyFile, readyToken = HELPER_READY, parentPid, expectedHash } = {}) {
   return new Promise((resolve, reject) => {
     if (!child.stdout || !child.stderr) { reject(new Error('업데이트 도우미 응답 통로를 열지 못했어.')); return; }
-    let pending = '', received = 0, settled = false;
-    const finish = error => {
+    let pending = '', received = 0, settled = false, pollTimer, reading = false;
+    const finish = (error, acknowledgement) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(pollTimer);
       child.stdout.removeListener('data', onData);
       child.stderr.removeListener('data', onStderr);
       child.removeListener('error', onError);
       child.removeListener('exit', onExit);
       child.stdout.resume();
       child.stderr.resume();
-      if (error) reject(error); else resolve();
+      if (error) reject(error); else resolve(acknowledgement);
     };
     const onData = chunk => {
       received += chunk.length;
       if (received > 64 * 1024) { finish(new Error('업데이트 도우미 응답을 확인하지 못했어.')); return; }
       pending += chunk.toString('utf8');
       const lines = pending.split(/\r?\n/); pending = lines.pop();
-      if (lines.includes(HELPER_READY)) finish();
+      if (!readyFile && lines.includes(HELPER_READY)) finish();
       else if (pending.length > 4096) finish(new Error('업데이트 도우미 응답을 확인하지 못했어.'));
     };
     // Drain stderr while waiting; helper failures are reported through a controlled message.
@@ -153,6 +154,23 @@ function waitForHelperReady(child, { timeoutMs = 30000 } = {}) {
     child.once('error', onError);
     child.once('exit', onExit);
     if (child.exitCode != null || child.signalCode != null) onExit();
+    if (readyFile && !settled) {
+      const poll = async () => {
+        if (reading || settled) return;
+        reading = true;
+        try {
+          const stat = await fs.lstat(readyFile);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2048) throw new Error('Invalid helper acknowledgement');
+          const ack = JSON.parse(await fs.readFile(readyFile, 'utf8'));
+          if (ack.token !== readyToken || ack.parentPid !== parentPid || ack.sha256 !== expectedHash || !Number.isSafeInteger(ack.pid) || ack.pid < 1) throw new Error('Invalid helper acknowledgement');
+          finish(null, ack);
+        } catch (error) {
+          if (error.code !== 'ENOENT') finish(new Error('업데이트 도우미 응답을 확인하지 못했어.'));
+        } finally { reading = false; }
+      };
+      pollTimer = setInterval(poll, 50);
+      void poll();
+    }
   });
 }
 
@@ -180,7 +198,7 @@ async function stopHelper(child, { env = process.env, platform = process.platfor
   });
 }
 
-function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHash }) {
+function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHash, readyToken = HELPER_READY }) {
   if (!Number.isSafeInteger(parentPid) || parentPid < 1 || !normalizeDigest(expectedHash)) throw new Error('Invalid updater parameters');
   // The signed-in user's NSIS installer owns file replacement, registration and restart.
   // These switches are defined by electron-builder's NsisTarget and installSection.nsh.
@@ -189,6 +207,8 @@ $installer = ${psLiteral(installer)}
 $appExe = ${psLiteral(appExe)}
 $scriptPath = ${psLiteral(scriptPath)}
 $stageDir = [System.IO.Path]::GetDirectoryName($installer)
+$readyPath = [System.IO.Path]::Combine($stageDir, 'helper-ready.json')
+$readyToken = ${psLiteral(readyToken)}
 $expected = ${psLiteral(expectedHash.toLowerCase())}
 $installed = $false
 $canonicalAppExe = $null
@@ -253,8 +273,12 @@ public static class AllradioneUpdatePaths {
   if (-not $canonicalAppExe) { throw 'Installed application path could not be resolved' }
   # Spawn only confirms powershell.exe exists. Acknowledge successful script startup
   # and checksum verification before the application is allowed to close.
-  [Console]::Out.WriteLine('${HELPER_READY}')
-  [Console]::Out.Flush()
+  $readyRecord = @{ token=$readyToken; pid=$PID; parentPid=${parentPid}; sha256=$expected } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText($readyPath + '.tmp', $readyRecord, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::Move($readyPath + '.tmp', $readyPath)
+  # Detached console hosts may replace inherited stdout handles. The owned,
+  # nonce-bound file is authoritative; console output is only diagnostic.
+  try { [Console]::Out.WriteLine('${HELPER_READY}'); [Console]::Out.Flush() } catch {}
   Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
   if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
   $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -ErrorAction Stop
@@ -287,6 +311,8 @@ public static class AllradioneUpdatePaths {
     Start-Process -FilePath $appExe -WorkingDirectory ([System.IO.Path]::GetDirectoryName($appExe)) -ErrorAction SilentlyContinue
   }
 } finally {
+  try { [System.IO.File]::Delete($readyPath + '.tmp') } catch {}
+  try { [System.IO.File]::Delete($readyPath) } catch {}
   try { [System.IO.File]::Delete($installer) } catch {}
   try { [System.IO.File]::Delete($scriptPath) } catch {}
   if ($installed) {
@@ -378,7 +404,8 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       if (bytes < 1024 || magic.toString('ascii') !== 'MZ') throw new Error('정상적인 Windows 실행 파일이 아니야.');
       if (hash.digest('hex') !== digest) throw new Error('다운로드 파일의 체크섬이 일치하지 않아.');
       const scriptPath = path.join(stageDir, 'apply-update.ps1');
-      const script = makeUpdateScript({ parentPid: process.pid, installer: stagedExe, appExe, scriptPath, expectedHash: digest });
+      const readyToken = crypto.randomBytes(24).toString('hex');
+      const script = makeUpdateScript({ parentPid: process.pid, installer: stagedExe, appExe, scriptPath, expectedHash: digest, readyToken });
       const scriptBytes = Buffer.from('\ufeff' + script, 'utf8');
       await fs.writeFile(scriptPath, scriptBytes);
       const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
@@ -389,7 +416,7 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       // Execute our generated literal script directly. No machine or process policy changes.
       // Its working directory must remain outside the installation being replaced.
       helper = spawnImpl(launch.executable, launch.args, { detached: true, windowsHide: true, windowsVerbatimArguments: true, cwd: dataDir, env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
-      await waitForHelperReady(helper, { timeoutMs: helperTimeoutMs });
+      await waitForHelperReady(helper, { timeoutMs: helperTimeoutMs, readyFile: path.join(stageDir, 'helper-ready.json'), readyToken, parentPid: process.pid, expectedHash: digest });
       await setStageOwner(stageDir, helper.pid);
       helper.stdout.unref?.();
       helper.stderr.unref?.();
