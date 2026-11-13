@@ -8,8 +8,10 @@ export interface PlayerState { station:Station|null; playing:boolean; status:'id
 export interface UpdateInfo { available:boolean; version:string; currentVersion:string; url:string; assetUrl?:string; assetName?:string; digest?:string; message?:string; mode?:'installer'|'portable'|'development'; }
 export interface CacheInfo { httpBytes:number|null; metadataBytes:number; codeBytes:number; totalBytes:number; errors:string[]; }
 export interface CacheResult { beforeBytes:number; afterBytes:number; freedBytes:number; errors:string[]; }
+export interface ChatAdminSession { resumeToken:string; expiresAt:number; }
 export interface AllradioneBridge {
  getPreferences():Promise<Preferences>; savePreferences(patch:Partial<Preferences>):Promise<Preferences>;
+ getChatAdminSession?():Promise<ChatAdminSession|null>; setChatAdminSession?(session:ChatAdminSession|null):Promise<boolean>;
  countries():Promise<Country[]>; stations(code:string):Promise<Station[]>;
  streamUrl(url:string):Promise<StreamSource>; stationClick(id:string):Promise<void>;
  setWidget(enabled:boolean,size:WidgetSize):Promise<void>;

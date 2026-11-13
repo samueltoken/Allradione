@@ -14,9 +14,9 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
 const MARKER = 'allradione-owner.txt';
-const BASELINE_VERSION = '0.2.4';
+const BASELINE_VERSION = '0.2.5';
 const BASELINE_URL = `https://github.com/samueltoken/Allradione/releases/download/v${BASELINE_VERSION}/Allradione-Setup-${BASELINE_VERSION}-x64.exe`;
-const BASELINE_SHA256 = '9ae1cccc7b8e372d9643ba2ce1319b9dcbd5bc0a065e66177b2a3fc5de51d63f';
+const BASELINE_SHA256 = '60ffd3347830c96c4b3277bd7d1835ab688149d8a0a168085d76010b715d863b';
 const canonicalPath = promisify(realpath.native);
 
 function sameWindowsPath(left, right) {
@@ -266,7 +266,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   const readTrace = async () => { trace = await readLatestTrace(traceDirectory); return trace; };
   const checkFailure = async () => {
     const current = await readTrace();
-    if (current.result && current.result.status !== (releasedUpdater ? 'installing' : 'opened')) throw new Error(`Released updater did not hand off: ${current.result.message}`);
+    if (current.result && current.result.status !== 'opened') throw new Error(`Setup did not open: ${current.result.message}`);
     for (const stage of current.stageDirectories) {
       const errorFile = path.join(stage, 'update-error.txt');
       if (await exists(errorFile)) {
@@ -372,10 +372,8 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
     assert.ok(await sameWindowsFile(actual.cwd, path.dirname(executable)), 'Real app updater must inherit the installed working directory');
     assert.ok(await sameWindowsFile(actual.executable, executable), 'Updater must run inside the installed baseline executable');
     assert.ok(await sameWindowsFile(actual.userData, userData), 'Updater must use the genuine installed profile');
-    if (!releasedUpdater) {
-      await startRadioFixture(application, page);
-      beforeSettings = await page.evaluate(() => window.allradione.getPreferences());
-    }
+    await startRadioFixture(application, page);
+    beforeSettings = await page.evaluate(() => window.allradione.getPreferences());
     await page.locator('[data-action="settings"]').click();
     await page.locator('[data-action="check-update"]').click();
     await page.locator('[data-action="install-update"]').waitFor({ timeout: 30000 });
@@ -383,34 +381,32 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
     await page.screenshot({ path: path.join(OUTPUT, `${prefix}-before.png`) });
     await page.locator('[data-action="install-update"]').click();
     let setupWindows;
-    if (!releasedUpdater) {
-      const waitForWizard = async previousPid => {
-        await poll(async () => {
-          await checkFailure();
-          return trace.result?.status === 'opened' && trace.helper?.pid && trace.helper.pid !== previousPid;
-        }, 'interactive setup opens from the real Settings button', 60000);
-        assert.ok(await sameWindowsFile(trace.helper.executable, path.join(trace.stageDirectories[0], path.basename(installer))));
-        assert.ok(processAlive(actual.pid), 'The player stays open until the user accepts the wizard');
-        return trace.helper.pid;
-      };
-      const first = await waitForWizard();
-      const cancelledStage = trace.stageDirectories[0];
-      const playedBeforeCancel = await page.evaluate(() => window.__setupTestRadio.currentTime);
-      const cancel = await operateSetupWindow(first, true);
-      await poll(async () => !(await exists(cancelledStage)), 'cancel removes its owned download');
-      assert.ok(processAlive(actual.pid), 'Cancelling Setup must leave the old app running');
-      const playedAfterCancel = await page.evaluate(() => {
-        const audio = window.__setupTestRadio;
-        return { seconds: audio.currentTime, playing: !audio.paused && !audio.ended && !audio.error };
-      });
-      assert.ok(playedAfterCancel.playing && playedAfterCancel.seconds > playedBeforeCancel, 'The same real audio element keeps playing through cancellation');
-      await page.locator('[data-action="check-update"]').click();
-      await page.locator('[data-action="install-update"]').click();
-      const second = await waitForWizard(first);
-      const finish = await operateSetupWindow(second);
-      assert.equal(finish.exitCode, 0);
-      setupWindows = { cancel, finish, playedBeforeCancel, playedAfterCancel };
-    }
+    const waitForWizard = async previousPid => {
+      await poll(async () => {
+        await checkFailure();
+        return trace.result?.status === 'opened' && trace.helper?.pid && trace.helper.pid !== previousPid;
+      }, 'interactive setup opens from the real Settings button', 60000);
+      assert.ok(await sameWindowsFile(trace.helper.executable, path.join(trace.stageDirectories[0], path.basename(installer))));
+      assert.ok(processAlive(actual.pid), 'The player stays open until the user accepts the wizard');
+      return trace.helper.pid;
+    };
+    const first = await waitForWizard();
+    const cancelledStage = trace.stageDirectories[0];
+    const playedBeforeCancel = await page.evaluate(() => window.__setupTestRadio.currentTime);
+    const cancel = await operateSetupWindow(first, true);
+    await poll(async () => !(await exists(cancelledStage)), 'cancel removes its owned download');
+    assert.ok(processAlive(actual.pid), 'Cancelling Setup must leave the old app running');
+    const playedAfterCancel = await page.evaluate(() => {
+      const audio = window.__setupTestRadio;
+      return { seconds: audio.currentTime, playing: !audio.paused && !audio.ended && !audio.error };
+    });
+    assert.ok(playedAfterCancel.playing && playedAfterCancel.seconds > playedBeforeCancel, 'The same real audio element keeps playing through cancellation');
+    await page.locator('[data-action="check-update"]').click();
+    await page.locator('[data-action="install-update"]').click();
+    const second = await waitForWizard(first);
+    const finish = await operateSetupWindow(second);
+    assert.equal(finish.exitCode, 0);
+    setupWindows = { cancel, finish, playedBeforeCancel, playedAfterCancel };
     await poll(async () => { await checkFailure(); return parentExit.observed && !processAlive(actual.pid); }, 'actual installed application exits after its own updater handoff', legacyDiagnostic ? 30000 : 60000);
     assert.equal(parentExit.code, 0, 'Released updater must quit the original application normally');
     await checkFailure();
@@ -667,18 +663,12 @@ async function main() {
     // Install the retained, SHA256-pinned release as the upgrade baseline.
     await runProcess(baselineInstaller, nsisArguments(installDirectory), { verbatim: true });
     installed = true;
-    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'baseline' });
     const baselinePid = await withInstalledApp(executable, async (application, page) => {
       assert.equal(await page.evaluate(() => window.allradione.version()), BASELINE_VERSION, `Upgrade baseline must be actual released v${BASELINE_VERSION}`);
-      await page.evaluate(station => window.allradione.savePreferences({ volume: 0.31, favorites: [station], widgetEnabled: false, widgetSize: 'medium', reducedMotion: true }), sentinel);
+      await page.evaluate(station => window.allradione.savePreferences({ volume: 0.31, favorites: [station], widgetEnabled: false, widgetSize: 'medium', reducedMotion: true, backgroundPlayback: false }), sentinel);
       return application.process().pid;
     });
-    // 0.2.4 predates the background preference. Seed the listener's choice
-    // in the disposable profile while that app is fully closed. The old
-    // downloader does not save settings, so the new installation inherits it.
-    const savedSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
-    savedSettings.backgroundPlayback = false;
-    await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify(savedSettings));
+    await assertNativeDesktopLaunch({ desktopExe, desktopShortcut, executable, phase: 'baseline' });
     const beforeUpgrade = await windowsSnapshot();
     await assertShortcutTarget(beforeUpgrade, menuShortcut, executable, 'Baseline Start menu shortcut must target the actual installed app');
     const releasedUpdater = await readReleasedUpdater(installDirectory);

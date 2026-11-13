@@ -22,7 +22,7 @@ export function restrictionText(until: number, policy: ChatPolicy) {
   return '';
 }
 
-export function mountModeration(root: HTMLElement, send: (packet: unknown) => boolean, setStatus: (text: string) => void) {
+export function mountModeration(root: HTMLElement, send: (packet: unknown) => boolean, setStatus: (text: string) => void, logout: (expired: boolean) => void) {
   const bar = root.querySelector<HTMLElement>('.chat-admin')!;
   const dialog = document.createElement('dialog');
   dialog.className = 'chat-dialog';
@@ -84,9 +84,7 @@ export function mountModeration(root: HTMLElement, send: (packet: unknown) => bo
   function setActive(value: boolean, expiresAt = 0) {
     clearTimeout(expiry); active = value; bar.hidden = !value;
     if (view) close();
-    if (value && expiresAt > Date.now()) expiry = setTimeout(() => {
-      setActive(false); send({type:'adminLogout'}); setStatus('관리자 로그인 시간이 끝났습니다.');
-    }, expiresAt - Date.now());
+    if (value) expiry = setTimeout(() => logout(true), Math.max(0, expiresAt - Date.now()));
   }
   function setPolicy(value: ChatPolicy) { policy = value; }
   function settings() {
@@ -164,7 +162,7 @@ export function mountModeration(root: HTMLElement, send: (packet: unknown) => bo
   }
   bar.querySelector<HTMLButtonElement>('[data-chat="settings"]')!.onclick = settings;
   bar.querySelector<HTMLButtonElement>('[data-chat="reports"]')!.onclick = reports;
-  bar.querySelector<HTMLButtonElement>('[data-chat="logout"]')!.onclick = () => send({type:'adminLogout'});
+  bar.querySelector<HTMLButtonElement>('[data-chat="logout"]')!.onclick = () => logout(false);
   function refresh() {
     labels(); title.textContent = t(titleKey); setFeedback(feedbackKey);
     viewLabels(); dynamicLabels();

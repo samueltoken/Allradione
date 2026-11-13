@@ -17,6 +17,9 @@ const currentUntil = (value, now) => value === -1 || value > now ? value : 0;
 const validMinutes = value => Number.isSafeInteger(value) && value >= -1 && value <= 5256000;
 const until = (minutes, now) => minutes > 0 ? now + minutes * 60000 : minutes;
 const unbase64 = value => Uint8Array.from(atob(value), c => c.charCodeAt(0));
+const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2,'0')).join('');
+const digest = async value => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))));
+const validResumeToken = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 
 function stationInfo(value) {
   const name = clean(value?.name, 100);
@@ -68,6 +71,9 @@ export class GlobalChat extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    ctx.blockConcurrencyWhile(async () => {
+      this.verifierHash = env.ADMIN_VERIFIER ? await digest(env.ADMIN_VERIFIER) : '';
+    });
     // Create the 0.2.4 base first so existing and brand-new rooms use the same migration.
     ctx.storage.transactionSync(() => {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS visitors (
@@ -76,6 +82,8 @@ export class GlobalChat extends DurableObject {
         CREATE TABLE IF NOT EXISTS reports (message INTEGER, reporter INTEGER, time INTEGER, PRIMARY KEY(message, reporter));
         CREATE INDEX IF NOT EXISTS visitor_age ON visitors(seen);
         CREATE TABLE IF NOT EXISTS room_settings (id INTEGER PRIMARY KEY, slow_seconds INTEGER, lock_until INTEGER, network_salt TEXT);
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+          author INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, expires INTEGER NOT NULL, verifier_hash TEXT NOT NULL);
       `);
       if (!this.sql.exec('SELECT id FROM room_settings LIMIT 1').toArray().length) {
         this.sql.exec(`ALTER TABLE visitors ADD COLUMN banned_until INTEGER DEFAULT 0;
@@ -108,6 +116,7 @@ export class GlobalChat extends DurableObject {
     this.sql.exec('DELETE FROM report_snapshots WHERE n NOT IN (SELECT message FROM reports)');
     this.sql.exec('DELETE FROM visitors WHERE seen < ? AND banned_until != -1 AND banned_until <= ?', now - 30 * DAY, now);
     this.sql.exec('DELETE FROM limits WHERE expires <= ?',now);
+    this.sql.exec('DELETE FROM admin_sessions WHERE expires <= ? OR verifier_hash != ?',now,this.verifierHash);
   }
 
   async alarm() {
@@ -201,7 +210,7 @@ export class GlobalChat extends DurableObject {
     socket.serializeAttachment({...session,author:visitor.n,station,stationTime:now});
     const presence = Array.from(this.presence().values(), entry => ({author:entry.author,station:entry.station}));
     send(socket,{type:'welcome',token:visitor.token,author:visitor.n,nickname,history:this.sql.exec('SELECT * FROM messages ORDER BY n').toArray().map(messageInfo),
-      policy:this.policy(now),bannedUntil,presence});
+      policy:this.policy(now),bannedUntil,presence,adminResume:true});
     if (station) this.publishPresence(visitor.n);
     if (await this.ctx.storage.getAlarm() === null) await this.ctx.storage.setAlarm(now+DAY);
   }
@@ -217,32 +226,96 @@ export class GlobalChat extends DurableObject {
     return true;
   }
 
+  savedSession(author, tokenHash, now) {
+    if (!tokenHash || !this.verifierHash) return;
+    return this.sql.exec(`SELECT s.expires FROM admin_sessions s JOIN visitors v ON v.n=s.author
+      WHERE s.author=? AND s.token_hash=? AND s.expires>? AND s.verifier_hash=?
+      AND v.banned_until != -1 AND v.banned_until <= ?`,author,tokenHash,now,this.verifierHash,now).toArray()[0];
+  }
+
+  startAttempt(socket, session) {
+    const attempt = crypto.randomUUID();
+    socket.serializeAttachment({...session,attempt});
+    return attempt;
+  }
+
+  finishAttempt(socket, attempt) {
+    const latest = socket.deserializeAttachment();
+    if (latest?.attempt !== attempt) return;
+    delete latest.attempt;
+    socket.serializeAttachment(latest);
+    return latest;
+  }
+
+  activate(socket, session, sessionHash, expiresAt, resumeToken) {
+    socket.serializeAttachment({...session,sessionHash,expiresAt});
+    send(socket,{type:'adminSession',active:true,resumeToken,expiresAt,nickname:ADMIN_NAME,policy:this.policy(Date.now())});
+  }
+
   async login(socket, session, data, visitor, now) {
     if (!session.network || !this.takeLimit('login:' + session.network, 5, 10 * 60000, now) ||
         !this.takeLimit('login:global', 30, 60000, now)) {
       return fail(socket,'login','로그인 요청이 많습니다. 잠시 후 다시 시도해 주세요.');
     }
-    const attempt = crypto.randomUUID();
-    socket.serializeAttachment({...session,attempt});
+    const attempt = this.startAttempt(socket,session);
     const valid = await verifyLogin(this.env.ADMIN_VERIFIER,data.id,data.proof);
-    const latest = socket.deserializeAttachment();
-    if (latest?.attempt !== attempt) return;
-    delete latest.attempt;
-    socket.serializeAttachment(latest);
+    const token = valid ? hex(crypto.getRandomValues(new Uint8Array(32))) : '';
+    const sessionHash = valid ? await digest(token) : '';
+    const latest = this.finishAttempt(socket,attempt);
+    if (!latest) return;
     const current = this.sql.exec('SELECT banned_until FROM visitors WHERE n=?',visitor.n).toArray()[0];
     if (!valid || !current || currentUntil(current.banned_until,Date.now())) {
       return fail(socket,'login','관리자 로그인 정보를 확인해 주세요.');
     }
     const expiresAt = Date.now() + SESSION_LIFETIME;
-    socket.serializeAttachment({...latest,expiresAt});
-    send(socket,{type:'adminSession',active:true,expiresAt,nickname:ADMIN_NAME,policy:this.policy(Date.now())});
+    const previous = this.sql.exec('SELECT token_hash FROM admin_sessions WHERE author=?',visitor.n).toArray()[0];
+    if (previous) this.revoke(socket,visitor,previous.token_hash);
+    this.sql.exec('INSERT OR REPLACE INTO admin_sessions(author,token_hash,expires,verifier_hash) VALUES(?,?,?,?)',
+      visitor.n,sessionHash,expiresAt,this.verifierHash);
+    this.activate(socket,latest,sessionHash,expiresAt,token);
   }
 
-  logout(socket, session, visitor) {
+  async resume(socket, session, data, visitor) {
+    const attempt = this.startAttempt(socket,session);
+    const sessionHash = validResumeToken(data.resumeToken) ? await digest(data.resumeToken) : '';
+    const latest = this.finishAttempt(socket,attempt);
+    if (!latest) return;
+    const now = Date.now();
+    const saved = this.savedSession(visitor.n,sessionHash,now);
+    if (!saved) return this.clearAdmin(socket,latest,visitor);
+    this.activate(socket,latest,sessionHash,saved.expires);
+  }
+
+  clearAdmin(socket, session, visitor) {
+    delete session.sessionHash;
     delete session.expiresAt;
     delete session.attempt;
     socket.serializeAttachment(session);
     send(socket,{type:'adminSession',active:false,nickname:publicName(visitor.nickname)});
+  }
+
+  revoke(socket, visitor, sessionHash) {
+    const removed = this.sql.exec('DELETE FROM admin_sessions WHERE author=? AND token_hash=? RETURNING author',visitor.n,sessionHash).toArray();
+    if (!removed.length) return;
+    for (const peer of this.ctx.getWebSockets()) {
+      if (peer === socket) continue;
+      const session = peer.deserializeAttachment();
+      if (session?.author === visitor.n && session.sessionHash === sessionHash) {
+        try { this.clearAdmin(peer,session,visitor); } catch { /* Peer already closed. */ }
+      }
+    }
+  }
+
+  async logout(socket, session, visitor, resumeToken) {
+    if (session.sessionHash) {
+      this.revoke(socket,visitor,session.sessionHash);
+    } else if (validResumeToken(resumeToken)) {
+      const attempt = this.startAttempt(socket,session);
+      this.revoke(socket,visitor,await digest(resumeToken));
+      session = this.finishAttempt(socket,attempt);
+      if (!session) return;
+    }
+    this.clearAdmin(socket,session,visitor);
   }
 
   setPolicy(socket, data, now) {
@@ -261,15 +334,16 @@ export class GlobalChat extends DurableObject {
       return fail(socket,'admin','차단 대상과 기간을 확인해 주세요.');
     }
     const peers = this.ctx.getWebSockets().filter(peer => peer.deserializeAttachment()?.author === data.author);
-    if (session.author === data.author || peers.some(peer => peer.deserializeAttachment().expiresAt > now)) {
+    if (session.author === data.author || peers.some(peer => this.savedSession(data.author,peer.deserializeAttachment().sessionHash,now))) {
       return fail(socket,'admin','접속 중인 관리자는 차단할 수 없습니다.');
     }
     const end = until(data.minutes,now);
     const changed = this.sql.exec('UPDATE visitors SET banned_until=? WHERE n=? RETURNING n',end,data.author).toArray();
     if (!changed.length) return fail(socket,'admin','해당 사용자를 찾을 수 없습니다.');
+    if (end) this.sql.exec('DELETE FROM admin_sessions WHERE author=?',data.author);
     for (const peer of peers) {
       try {
-        if (end) peer.serializeAttachment({...peer.deserializeAttachment(),station:null,attempt:null,expiresAt:0});
+        if (end) peer.serializeAttachment({...peer.deserializeAttachment(),station:null,attempt:null,sessionHash:null,expiresAt:0});
         send(peer,{type:'ban',until:end});
       } catch { /* Another connection may already have closed. */ }
     }
@@ -340,8 +414,9 @@ export class GlobalChat extends DurableObject {
     socket.serializeAttachment(session);
     const visitor = this.sql.exec('SELECT * FROM visitors WHERE n=?',session.author).toArray()[0];
     if (!visitor) return socket.close(1001,'Reconnect');
-    if (session.expiresAt && session.expiresAt <= now) this.logout(socket,session,visitor);
-    if (data.type === 'adminLogout') return this.logout(socket,session,visitor);
+    if (data.type === 'adminLogout') return this.logout(socket,session,visitor,data.resumeToken);
+    if (session.expiresAt && !this.savedSession(visitor.n,session.sessionHash,now)) this.clearAdmin(socket,session,visitor);
+    if (data.type === 'adminResume') return this.resume(socket,session,data,visitor);
     if (currentUntil(visitor.banned_until,now)) return fail(socket,data.type === 'adminLogin' ? 'login' : data.type,'채팅이 차단된 상태입니다.');
     if (data.type === 'adminLogin') return this.login(socket,session,data,visitor,now);
     if (data.type.startsWith('admin')) {

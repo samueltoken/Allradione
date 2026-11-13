@@ -97,7 +97,7 @@ Build the Windows installer with Visual Studio C++ Build Tools and the Windows S
 npm run dist:win
 ```
 
-GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.4 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
+GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.5 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
 
 For a release, update the package version and lockfile, add notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow validates the build and publishes the installer with `SHA256SUMS.txt` after all checks pass.
 

@@ -4,6 +4,7 @@ import { flagUrl } from './flags';
 import { mountModeration, restrictionText, type ChatPolicy } from './chat-moderation';
 import { t, onLanguageChange } from './i18n';
 import { bindChatLabels } from './chat-labels';
+import type { ChatAdminSession } from './types';
 
 interface Listening { name: string; countrycode: string }
 interface ChatMessage { n: number; author: number; name: string; body: string; time: number; station?: Listening | null; admin?: boolean }
@@ -100,7 +101,7 @@ export function mountChat() {
   let socket: WebSocket | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let attempts = 0, self = 0;
-  let open = false, ready = false, pending = '';
+  let open = false, joined = false, ready = false, pending = '';
   let messages: ChatMessage[] = [];
   function controls() {
     const reason = restrictionText(bannedUntil,policy);
@@ -121,7 +122,24 @@ export function mountChat() {
   };
   let statusKey = '', nickname = '';
   function setStatus(key:string) { statusKey = key; status.textContent = t(key); }
-  const admin = mountModeration(root,transmit,setStatus);
+  let savedSession:ChatAdminSession|null = null;
+  const initialSession = window.allradione?.getChatAdminSession?.().then(value => {
+    savedSession = value;
+  }).catch(() => {});
+  function rememberSession(value:ChatAdminSession|null) {
+    if (savedSession === value) return;
+    savedSession = value;
+    void window.allradione?.setChatAdminSession?.(value).catch(() => {});
+  }
+  function logout(expired:boolean) {
+    const resumeToken = savedSession?.resumeToken;
+    rememberSession(null);
+    transmit({type:'adminLogout',resumeToken});
+    admin.setActive(false); displayIdentity(); paint();
+    if (expired) setStatus('관리자 로그인 시간이 끝났습니다.');
+    else identity.focus();
+  }
+  const admin = mountModeration(root,transmit,setStatus,logout);
   function displayIdentity() {
     identity.textContent = admin.active ? t('관리자') : nickname;
     identity.title = t(admin.active ? '채팅 설정' : '닉네임 변경');
@@ -183,12 +201,14 @@ export function mountChat() {
     const ws = new WebSocket(url);
     socket = ws;
     let joiningStation:Listening|null = null;
+    let resuming = false;
     ws.onopen = () => { if (socket === ws) { joiningStation = listening; transmit({type:'join',token:store.get('token'),station:listening}); } };
-    ws.onmessage = event => {
+    ws.onmessage = async event => {
       if (socket !== ws) return;
       let packet;
       try { packet = JSON.parse(event.data); } catch { return; }
       if (packet.type === 'welcome') {
+        joined = true;
         store.set('token',packet.token); self = packet.author;
         online.clear();
         for (const entry of packet.presence || []) online.set(entry.author,entry.station);
@@ -198,15 +218,29 @@ export function mountChat() {
         nickname = packet.nickname || 'Ano'+self; displayIdentity();
         name.value = packet.nickname; name.placeholder = 'Ano'+self;
         messages = packet.history; paint(); list.scrollTop = list.scrollHeight;
-        ready = true; attempts = 0; setStatus(''); updateRestrictions();
+        attempts = 0;
         if (joiningStation !== listening) transmit({type:'presence',station:listening});
+        await initialSession;
+        if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+        if (savedSession && savedSession.expiresAt <= Date.now()) rememberSession(null);
+        if (savedSession && packet.adminResume === true) {
+          resuming = transmit({type:'adminResume',resumeToken:savedSession.resumeToken});
+        }
+        ready = !resuming; setStatus(''); updateRestrictions();
       } else if (packet.type === 'presence') {
         online.set(packet.author,packet.station); updateStations(packet.author);
       } else if (packet.type === 'adminSession') {
-        admin.setActive(packet.active,packet.expiresAt);
-        if (!packet.active) nickname = packet.nickname || 'Ano'+self;
-        displayIdentity(); name.value = packet.active ? '' : packet.nickname || '';
-        rename.hidden = true; setStatus(''); paint(); identity.focus();
+        const active = packet.active === true && Number.isSafeInteger(packet.expiresAt) && packet.expiresAt > Date.now();
+        if (active && typeof packet.resumeToken === 'string' && /^[0-9a-f]{64}$/.test(packet.resumeToken)) {
+          rememberSession({resumeToken:packet.resumeToken,expiresAt:packet.expiresAt});
+        } else if (!active || !resuming) rememberSession(null);
+        admin.setActive(active,packet.expiresAt);
+        if (!active) nickname = packet.nickname || 'Ano'+self;
+        displayIdentity(); name.value = active ? '' : packet.nickname || '';
+        rename.hidden = true; ready = true; updateRestrictions(); paint();
+        if (statusKey !== '관리자 로그인 시간이 끝났습니다.' || active) setStatus('');
+        if (!resuming) identity.focus();
+        resuming = false;
       } else if (packet.type === 'reports') {
         admin.receiveReports(packet.items);
       } else if (packet.type === 'policy') {
@@ -230,6 +264,9 @@ export function mountChat() {
       } else if (packet.type === 'remove') {
         messages = messages.filter(m => m.n !== packet.n); paint();
       } else if (packet.type === 'error' || packet.type === 'notice') {
+        if (resuming && packet.type === 'error' && ['admin','adminResume'].includes(packet.scope)) {
+          resuming = false; ready = true; rememberSession(null);
+        }
         admin.result(packet.scope,packet.text,packet.type === 'notice');
         if (packet.type === 'error' && (!packet.scope || packet.scope === 'post')) pending = '';
         controls();
@@ -237,7 +274,7 @@ export function mountChat() {
     };
     ws.onclose = () => {
       if (socket !== ws) return;
-      ready = false; pending = ''; admin.setActive(false); displayIdentity(); controls();
+      socket = undefined; joined = ready = false; pending = ''; admin.setActive(false); displayIdentity(); controls();
       if (open) {
         setStatus('연결이 끊겼습니다. 다시 연결 중…');
         retry = setTimeout(connect, Math.min(30000, 1200 * 2 ** Math.min(attempts++, 5)));
@@ -250,7 +287,7 @@ export function mountChat() {
     toggle.title = toggle.ariaLabel = t(value ? '채팅 접기' : '채팅하기');
     if (value) { connect(); } else {
       clearTimeout(retry); const old = socket; socket = undefined; old?.close();
-      admin.setActive(false); pending = ''; ready = false; attempts = 0; rename.hidden = true;
+      admin.setActive(false); displayIdentity(); pending = ''; joined = ready = false; attempts = 0; rename.hidden = true;
       clearTimeout(restrictionTimer); controls(); toggle.focus();
     }
   }
@@ -286,7 +323,7 @@ export function mountChat() {
     listening(station:Listening|null) {
       if (station?.name === listening?.name && station?.countrycode === listening?.countrycode) return;
       listening = station ? {name:station.name,countrycode:station.countrycode} : null;
-      if (ready) { online.set(self,listening); updateStations(self); transmit({type:'presence',station:listening}); }
+      if (joined) { online.set(self,listening); updateStations(self); transmit({type:'presence',station:listening}); }
     }
   };
 }

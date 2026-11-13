@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { randomUUID, randomBytes, pbkdf2Sync } = require('node:crypto');
+const { randomUUID, randomBytes, pbkdf2Sync, createHash } = require('node:crypto');
 const path = require('node:path');
 const { readFileSync } = require('node:fs');
 const { unstable_dev } = require('wrangler');
@@ -145,6 +145,8 @@ test('station presence, verified admin session, report snapshots and room policy
   const session = await admin.next('adminSession');
   assert.equal(session.active,true);
   assert.equal(session.nickname,'관리자');
+  assert.equal(admin.identity.adminResume,true);
+  assert.match(session.resumeToken,/^[0-9a-f]{64}$/);
   assert.ok(session.expiresAt > Date.now() && session.expiresAt <= Date.now()+3600000);
 
   admin.send({type:'adminPolicy',slowSeconds:0,lockMinutes:7});
@@ -216,8 +218,22 @@ test('station presence, verified admin session, report snapshots and room policy
   const otherSession = await join(admin.identity.token);
   otherSession.send({type:'adminReports'});
   assert.equal((await otherSession.next('error')).scope,'admin');
+  otherSession.send({type:'adminResume',resumeToken:admin.identity.token});
+  assert.equal((await otherSession.next('adminSession')).active,false);
+  listener.send({type:'adminResume',resumeToken:session.resumeToken});
+  assert.equal((await listener.next('adminSession')).active,false);
+  otherSession.send({type:'adminResume',resumeToken:session.resumeToken});
+  const restored = await otherSession.next('adminSession');
+  assert.equal(restored.active,true);
+  assert.equal(restored.expiresAt,session.expiresAt);
+  assert.equal(restored.resumeToken,undefined);
+  otherSession.send({type:'adminReports'});
+  assert.equal((await otherSession.next('reports')).items[0].n,original.n);
   admin.send({type:'adminLogout'});
   assert.equal((await admin.next('adminSession')).active,false);
+  assert.equal((await otherSession.next('adminSession')).active,false);
+  otherSession.send({type:'adminResume',resumeToken:session.resumeToken});
+  assert.equal((await otherSession.next('adminSession')).active,false);
   admin.send({type:'adminBan',author:listener.identity.author,minutes:-1});
   assert.equal((await admin.next('error')).scope,'admin');
   for (let i=0;i<2;i++) {
@@ -228,6 +244,67 @@ test('station presence, verified admin session, report snapshots and room policy
   const newcomer = await join();
   newcomer.send({type:'adminLogin',id,proof});
   assert.match((await newcomer.next('error')).text,/요청이 많/);
+});
+
+test('saved administrator credentials expire, rotate and revoke across reconnects', {timeout:45000}, async t => {
+  const id = randomUUID(), password = randomUUID();
+  const proof = pbkdf2Sync(password,'Allradione admin login v1:'+id,600000,32,'sha256').toString('base64');
+  const verifier = require('./set-admin.cjs').makeVerifier(id,password);
+  const config = secret => ({...convertV4MiniflareOptions({name:'session-test',script:readFileSync(path.join(__dirname,'worker.js'),'utf8'),
+    modules:true,compatibilityDate:'2026-10-01',bindings:{ADMIN_VERIFIER:secret},cf:false,
+    durableObjects:{ROOM:{className:'GlobalChat',useSQLite:true}},ratelimits:{JOINS:{namespace_id:'1001',simple:{limit:20,period:60}}}}),
+    unsafeInspectDurableObjects:true});
+  const mf = new Miniflare(config(verifier));
+  const clients = [];
+  t.after(async () => { for (const client of clients) client.socket.close(); await mf.dispose(); });
+  const join = async token => {
+    const client = await connect((await mf.ready).toString().replace(/^http:/,'ws:')+'room',token);
+    clients.push(client);
+    return client;
+  };
+  const disconnect = async client => {
+    const closed = new Promise(resolve => client.socket.addEventListener('close',resolve,{once:true}));
+    client.socket.close();
+    await closed;
+  };
+  const authenticate = async (client,packet) => { client.send(packet); return client.next('adminSession'); };
+  const login = client => authenticate(client,{type:'adminLogin',id,proof});
+  const resume = (client,resumeToken) => authenticate(client,{type:'adminResume',resumeToken});
+  const first = await join();
+  const token = first.identity.token;
+  const previous = await login(first);
+  const current = await login(first);
+  assert.notEqual(previous.resumeToken,current.resumeToken);
+  const db = await mf.unsafeGetDurableObjectStorage('session-test','GlobalChat',{name:'global'});
+  const rows = await db.exec('SELECT token_hash,expires FROM admin_sessions');
+  assert.deepEqual(rows,[{token_hash:createHash('sha256').update(current.resumeToken).digest('hex'),expires:current.expiresAt}]);
+  await disconnect(first);
+
+  const peer = await join(token);
+  assert.equal((await resume(peer,previous.resumeToken)).active,false);
+  assert.equal((await resume(peer,current.resumeToken)).active,true);
+  const fresh = await join(token);
+  assert.equal((await authenticate(fresh,{type:'adminLogout',resumeToken:current.resumeToken})).active,false);
+  assert.equal((await peer.next('adminSession')).active,false);
+  assert.equal((await resume(peer,current.resumeToken)).active,false);
+
+  const limited = await login(fresh);
+  await db.exec('UPDATE admin_sessions SET expires=?',Date.now()-1);
+  fresh.send({type:'adminReports'});
+  assert.equal((await fresh.next('adminSession')).active,false);
+  assert.equal((await fresh.next('error')).scope,'admin');
+  assert.equal((await resume(peer,limited.resumeToken)).active,false);
+
+  const last = await login(peer);
+  await disconnect(peer);
+  await disconnect(fresh);
+  await mf.setOptions(config(verifier));
+  const sameWorker = await join(token);
+  assert.equal((await resume(sameWorker,last.resumeToken)).expiresAt,last.expiresAt);
+  await disconnect(sameWorker);
+  await mf.setOptions(config(require('./set-admin.cjs').makeVerifier(id,randomUUID())));
+  const restarted = await join(token);
+  assert.equal((await resume(restarted,last.resumeToken)).active,false);
 });
 
 test('upgrade a 0.2.4 SQLite room and retain reported text after public history expires', {timeout:30000}, async t => {

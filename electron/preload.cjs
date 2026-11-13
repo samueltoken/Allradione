@@ -4,6 +4,8 @@ const subscribe=(channel,callback)=>(ipcRenderer.on(channel,callback),()=>ipcRen
 contextBridge.exposeInMainWorld('allradione',{
  getPreferences:()=>ipcRenderer.invoke('preferences:get'),
  savePreferences:patch=>ipcRenderer.invoke('preferences:save',patch),
+ getChatAdminSession:()=>ipcRenderer.invoke('chat:admin-session:get'),
+ setChatAdminSession:value=>ipcRenderer.invoke('chat:admin-session:set',value),
  countries:()=>ipcRenderer.invoke('radio:countries'),
  stations:code=>ipcRenderer.invoke('radio:stations',code),
  streamUrl:url=>ipcRenderer.invoke('radio:stream',url),

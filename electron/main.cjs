@@ -1,5 +1,5 @@
 'use strict';
-const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,shell,session}=require('electron');
+const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,shell,session,safeStorage}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs/promises');
 const {pathToFileURL}=require('node:url');
@@ -9,7 +9,8 @@ const {fetchText}=require('./network.cjs');
 const {createPreferences}=require('./preferences.cjs');
 const {createRadio,cleanStation}=require('./radio.cjs');
 const {createUpdater}=require('./updater.cjs');
-const {configurePermissions}=require('./permissions.cjs');
+const {configurePermissions,sameDocument}=require('./permissions.cjs');
+const {createChatAdminSessionStore}=require('./chat-admin-session.cjs');
 const {createCacheService}=require('./cache.cjs');
 const {createDesktopService}=require('./desktop.cjs');
 const {prepareDataDir}=require('./data.cjs');
@@ -22,6 +23,7 @@ const INDEX=path.join(ROOT,'dist','index.html');
 const DEV=process.env.ALLRADIONE_DEV_URL;
 const ALLOWED_COMMANDS=new Set(['toggle-play','play','pause','next','previous','volume','favorite','show']);
 let mainWindow,widgetWindow,tray,preferences,radio,proxy,updater,cacheService,desktopService,quitting=false;
+let chatAdminSessions;
 let player={station:null,playing:false,status:'idle',volume:.7};
 let widgetGeneration=0;
 let currentWidgetKind='small',trayLanguage='';
@@ -115,6 +117,7 @@ function sanitizeState(value){
 }
 async function start(){
  const dataDir=await prepareDataDir({app});
+ chatAdminSessions=createChatAdminSessionStore({dataDir,safeStorage});
  // A legacy portable may launch Setup with its environment still attached.
  // Once the NSIS-installed executable is running, that variable is only migration input.
  if(app.isPackaged){try{if((await fs.stat(path.join(path.dirname(app.getPath('exe')),'Uninstall Allradione.exe'))).isFile())delete process.env.PORTABLE_EXECUTABLE_FILE;}catch{}}
@@ -128,7 +131,11 @@ async function start(){
  desktopService=createDesktopService({app,shell});
  let devUrl;
  if(DEV&&!app.isPackaged){try{const u=new URL(DEV);if(u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)&&!u.username&&!u.password)devUrl=u;}catch{}}
- configurePermissions(session.defaultSession,{getWindows:()=>[mainWindow,widgetWindow],documentUrl:devUrl?.href||pathToFileURL(INDEX).href,proxyEndpoint:proxy.url('https://example.com/'),devOrigin:devUrl?.origin});
+ const documentUrl=devUrl?.href||pathToFileURL(INDEX).href;
+ configurePermissions(session.defaultSession,{getWindows:()=>[mainWindow,widgetWindow],documentUrl,proxyEndpoint:proxy.url('https://example.com/'),devOrigin:devUrl?.origin});
+ const chatCaller=event=>event.sender===mainWindow?.webContents && sameDocument(event.senderFrame?.url,documentUrl);
+ handle('chat:admin-session:get',event=>chatCaller(event) ? chatAdminSessions.get() : null);
+ handle('chat:admin-session:set',(event,value)=>chatCaller(event) ? chatAdminSessions.set(value) : false);
  player.volume=preferences.get().volume;
  handle('preferences:get',()=>preferences.get());
  handle('preferences:save',async(_e,patch)=>{const saved=await preferences.save(patch);broadcastPreferences();return saved;});
@@ -183,6 +190,11 @@ async function start(){
  if(preferences.get().widgetEnabled)await setWidget(true,preferences.get().widgetSize);
  for(const event of ['display-added','display-removed','display-metrics-changed'])screen.on(event,anchorWidget);
 }
-app.on('before-quit',()=>{quitting=true;proxy?.close();});
+app.on('before-quit',event=>{
+ quitting=true;
+ const pending=chatAdminSessions?.pending;
+ if(pending){event.preventDefault();pending.then(()=>app.quit());return;}
+ proxy?.close();
+});
 app.on('activate',()=>mainWindow?showMain():createMain());
 app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});

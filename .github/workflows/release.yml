@@ -28,6 +28,7 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix chat
       - run: node --test chat/test.cjs
+      - run: node --test chat/test.restart.cjs
       - name: Verify language switching and two chat clients
         shell: pwsh
         env:
