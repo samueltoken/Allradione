@@ -13,7 +13,9 @@ const {configurePermissions}=require('./permissions.cjs');
 const {createCacheService}=require('./cache.cjs');
 const {createDesktopService}=require('./desktop.cjs');
 const {prepareDataDir}=require('./data.cjs');
-const {cleanupUpdateStages}=require('./update-staging.cjs');
+const {widgetDimensions,anchoredWidget}=require('./widget-geometry.cjs');
+const {trayMenu}=require('./tray-menu.cjs');
+const {cleanupUpdateStages,cleanupAfterSetup}=require('./update-staging.cjs');
 const {refreshVersionCodeCache}=require('./version-cache.cjs');
 const ROOT=path.join(__dirname,'..');
 const INDEX=path.join(ROOT,'dist','index.html');
@@ -22,8 +24,12 @@ const ALLOWED_COMMANDS=new Set(['toggle-play','play','pause','next','previous','
 let mainWindow,widgetWindow,tray,preferences,radio,proxy,updater,cacheService,desktopService,quitting=false;
 let player={station:null,playing:false,status:'idle',volume:.7};
 let widgetGeneration=0;
+let currentWidgetKind='small',trayLanguage='';
 app.setAppUserModelId('io.github.samueltoken.allradione');
-if(!app.requestSingleInstanceLock())app.quit();
+const setupCleanup = process.platform === 'win32' && app.isPackaged && process.argv.find(arg => /^--cleanup-update=\d{1,10}$/.test(arg));
+if(setupCleanup) {
+ app.whenReady().then(() => cleanupAfterSetup(app.getPath('userData'), Number(setupCleanup.split('=')[1]))).finally(() => app.quit());
+} else if(!app.requestSingleInstanceLock())app.quit();
 else {
  app.on('second-instance',()=>showMain());
  app.whenReady().then(start).catch(error=>{console.error('Allradione startup failed:',error);app.quit();});
@@ -57,18 +63,24 @@ function createMain(){
  mainWindow.once('ready-to-show',()=>mainWindow.show());
  mainWindow.on('close',event=>{
    if(quitting)return;
-   if(widgetWindow&&!widgetWindow.isDestroyed()){event.preventDefault();mainWindow.hide();}
+   if(preferences.get().backgroundPlayback && tray && !tray.isDestroyed()){
+     event.preventDefault();mainWindow.hide();return;
+   }
+   quitting=true;app.quit();
  });
  mainWindow.on('closed',()=>{mainWindow=null;if(!widgetWindow)app.quit();});
  for(const event of ['show','hide','minimize','restore'])mainWindow.on(event,broadcastVisibility);
  mainWindow.webContents.on('did-finish-load',()=>{broadcastState();broadcastVisibility();});
  load(mainWindow);
 }
+function widgetWorkArea(){
+ const bounds=mainWindow&&!mainWindow.isDestroyed()?mainWindow.getBounds():screen.getPrimaryDisplay().workArea;
+ return screen.getDisplayMatching(bounds).workArea;
+}
 function anchorWidget(){
  if(!widgetWindow||widgetWindow.isDestroyed())return;
- const bounds=mainWindow&&!mainWindow.isDestroyed()?mainWindow.getBounds():screen.getPrimaryDisplay().workArea;
- const area=screen.getDisplayMatching(bounds).workArea;
- const size=widgetWindow.getSize();widgetWindow.setPosition(area.x+area.width-size[0]-20,area.y+area.height-size[1]-20,false);
+ const size=widgetDimensions(currentWidgetKind,preferences.get().widgetWidths?.[currentWidgetKind]);
+ widgetWindow.setBounds(anchoredWidget(widgetWorkArea(),size),false);
  widgetWindow.setAlwaysOnTop(true,'screen-saver');
 }
 async function setWidget(enabled,size){
@@ -78,17 +90,23 @@ async function setWidget(enabled,size){
  if(generation!==widgetGeneration)return;
  if(widgetWindow&&!widgetWindow.isDestroyed()){widgetWindow.destroy();widgetWindow=null;}
  if(!enabled){showMain();return;}
- const medium=size==='medium';
- widgetWindow=new BrowserWindow({width:medium?460:176,height:medium?230:190,resizable:false,movable:false,show:false,frame:false,transparent:true,backgroundColor:'#00000000',hasShadow:false,roundedCorners:false,skipTaskbar:true,alwaysOnTop:true,focusable:true,title:'Allradione · Widget',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,webSecurity:true}});
+ currentWidgetKind=size;
+ const dimensions=widgetDimensions(size,preferences.get().widgetWidths?.[size]);
+ widgetWindow=new BrowserWindow({...dimensions,resizable:false,movable:false,show:false,frame:false,transparent:true,backgroundColor:'#00000000',hasShadow:false,roundedCorners:false,skipTaskbar:true,alwaysOnTop:true,focusable:true,title:'Allradione · Widget',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,webSecurity:true}});
  configureWindow(widgetWindow);anchorWidget();
  widgetWindow.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true});
  const current=widgetWindow;
  current.once('ready-to-show',()=>{if(!current.isDestroyed()){anchorWidget();current.showInactive();broadcastState();}});
  current.webContents.on('did-finish-load',()=>broadcastState());
  current.on('closed',()=>{if(widgetWindow===current)widgetWindow=null;});
- await load(current,{widget:medium?'medium':'small'});
+ await load(current,{widget:size});
 }
-function broadcastPreferences(){const current=preferences.get();for(const win of [mainWindow,widgetWindow])if(win&&!win.isDestroyed())win.webContents.send('player:command','preferences-changed',current);}
+function refreshTray(language){
+ if(!tray||tray.isDestroyed()||trayLanguage===language)return;
+ tray.setContextMenu(Menu.buildFromTemplate(trayMenu(language,showMain,()=>mainWindow?.webContents.send('player:command','toggle-play'),()=>{quitting=true;app.quit();})));
+ trayLanguage=language;
+}
+function broadcastPreferences(){const current=preferences.get();refreshTray(current.language);for(const win of [mainWindow,widgetWindow])if(win&&!win.isDestroyed())win.webContents.send('player:command','preferences-changed',current);}
 function broadcastState(){if(widgetWindow&&!widgetWindow.isDestroyed())widgetWindow.webContents.send('player:state',player);}
 function sanitizeState(value){
  if(!value||typeof value!=='object')return null;
@@ -124,6 +142,12 @@ async function start(){
  });
  handle('radio:click',(_e,id)=>radio.click(id));
  handle('widget:set',(_e,enabled,size)=>setWidget(Boolean(enabled),size==='medium'?'medium':'small'));
+ handle('widget:resize',async(event,width,save)=>{
+  if(event.sender!==widgetWindow?.webContents||!Number.isFinite(width))return;
+  const kind=currentWidgetKind,size=widgetDimensions(kind,width);
+  widgetWindow.setBounds(anchoredWidget(widgetWorkArea(),size),false);
+  if(save===true)await preferences.save({widgetWidths:{[kind]:size.width}});
+ });
  handle('app:version',()=>app.getVersion());
  handle('player:get',()=>player);
  handle('update:check',()=>updater.checkUpdate());
@@ -153,8 +177,7 @@ async function start(){
  const icon=nativeImage.createFromPath(path.join(ROOT,'assets','icon.png'));
  if(!icon.isEmpty()){
   tray=new Tray(icon.resize({width:24,height:24}));tray.setToolTip('Allradione');
-  tray.setContextMenu(Menu.buildFromTemplate([{label:'Allradione 열기',click:showMain},{label:'재생 / 일시정지',click:()=>mainWindow?.webContents.send('player:command','toggle-play')},{type:'separator'},{label:'종료',click:()=>{quitting=true;app.quit();}}]));
-  tray.on('double-click',showMain);
+  refreshTray(preferences.get().language);tray.on('click',showMain);tray.on('double-click',showMain);
  }
  if(preferences.get().widgetEnabled)await setWidget(true,preferences.get().widgetSize);
  for(const event of ['display-added','display-removed','display-metrics-changed'])screen.on(event,anchorWidget);

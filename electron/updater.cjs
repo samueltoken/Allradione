@@ -3,15 +3,16 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { createReadStream } = require('node:fs');
+const { once } = require('node:events');
 const { spawn } = require('node:child_process');
-const { STAGE_MARKER, createStageMarker, setStageOwner } = require('./update-staging.cjs');
+const { createStageMarker, setStageOwner, cleanupUpdateStages, discardDownload } = require('./update-staging.cjs');
 
 const REPO = 'samueltoken/Allradione';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
 const DOWNLOAD_HOSTS = new Set(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const MAX_EXE_BYTES = 768 * 1024 * 1024;
-const HELPER_READY = 'ALLRADIONE_UPDATER_READY';
 
 function parseVersion(value) {
   if (typeof value !== 'string') return null;
@@ -103,227 +104,7 @@ async function readLimited(response, limit) {
   return Buffer.concat(chunks);
 }
 
-function psLiteral(value) { return `'${String(value).replaceAll("'", "''")}'`; }
-
-function makeHelperLaunch({ systemRoot, scriptPath, scriptHash }) {
-  if (!path.win32.isAbsolute(systemRoot) || /["%!\r\n&|<>^]/.test(systemRoot) || !normalizeDigest(scriptHash)) throw new Error('업데이트 도우미 실행 경로를 확인하지 못했어.');
-  const executable = path.win32.join(systemRoot, 'System32', 'cmd.exe');
-  const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  // cmd.exe supplies the console PowerShell needs while remaining independent of
-  // Electron's lifetime. Keep cmd's command below its 8191-character limit: only
-  // this short, hash-checked bootstrap is encoded, never the full update script.
-  const bootstrap = `$ErrorActionPreference='Stop';$bytes=[System.IO.File]::ReadAllBytes(${psLiteral(scriptPath)});$sha=[System.Security.Cryptography.SHA256]::Create();try{$digest=([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()};if($digest -ne '${scriptHash}'){throw 'Updater script SHA256 mismatch'};& ([scriptblock]::Create([System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)))`;
-  const encoded = Buffer.from(bootstrap, 'utf16le').toString('base64');
-  const command = `""${powershell}" -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}"`;
-  if (command.length > 8000) throw new Error('업데이트 도우미 경로가 너무 길어.');
-  return { executable, args: ['/d', '/s', '/c', command] };
-}
-
-function waitForHelperReady(child, { timeoutMs = 30000, readyFile, readyToken = HELPER_READY, parentPid, expectedHash } = {}) {
-  return new Promise((resolve, reject) => {
-    if (!child.stdout || !child.stderr) { reject(new Error('업데이트 도우미 응답 통로를 열지 못했어.')); return; }
-    let pending = '', received = 0, settled = false, pollTimer, reading = false;
-    const finish = (error, acknowledgement) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearInterval(pollTimer);
-      child.stdout.removeListener('data', onData);
-      child.stderr.removeListener('data', onStderr);
-      child.removeListener('error', onError);
-      child.removeListener('exit', onExit);
-      child.stdout.resume();
-      child.stderr.resume();
-      if (error) reject(error); else resolve(acknowledgement);
-    };
-    const onData = chunk => {
-      received += chunk.length;
-      if (received > 64 * 1024) { finish(new Error('업데이트 도우미 응답을 확인하지 못했어.')); return; }
-      pending += chunk.toString('utf8');
-      const lines = pending.split(/\r?\n/); pending = lines.pop();
-      if (!readyFile && lines.includes(HELPER_READY)) finish();
-      else if (pending.length > 4096) finish(new Error('업데이트 도우미 응답을 확인하지 못했어.'));
-    };
-    // Drain stderr while waiting; helper failures are reported through a controlled message.
-    const onStderr = () => {};
-    const onError = () => finish(new Error('업데이트 도우미를 실행하지 못했어.'));
-    const onExit = () => finish(new Error('업데이트 도우미가 준비되기 전에 종료됐어. 다시 시도해줘.'));
-    const timer = setTimeout(() => finish(new Error('업데이트 도우미가 응답하지 않아. 다시 시도해줘.')), timeoutMs);
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onStderr);
-    child.once('error', onError);
-    child.once('exit', onExit);
-    if (child.exitCode != null || child.signalCode != null) onExit();
-    if (readyFile && !settled) {
-      const poll = async () => {
-        if (reading || settled) return;
-        reading = true;
-        try {
-          const stat = await fs.lstat(readyFile);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2048) throw new Error('Invalid helper acknowledgement');
-          const ack = JSON.parse(await fs.readFile(readyFile, 'utf8'));
-          if (ack.token !== readyToken || ack.parentPid !== parentPid || ack.sha256 !== expectedHash || !Number.isSafeInteger(ack.pid) || ack.pid < 1) throw new Error('Invalid helper acknowledgement');
-          finish(null, ack);
-        } catch (error) {
-          if (error.code !== 'ENOENT') finish(new Error('업데이트 도우미 응답을 확인하지 못했어.'));
-        } finally { reading = false; }
-      };
-      pollTimer = setInterval(poll, 50);
-      void poll();
-    }
-  });
-}
-
-async function stopHelper(child, { env = process.env, platform = process.platform, spawnImpl = spawn } = {}) {
-  if (!child || child.exitCode != null || child.signalCode != null) return;
-  // The owned cmd wrapper waits for PowerShell. Stop that exact process tree on
-  // cancellation so its inner helper cannot survive an abandoned handoff.
-  if (platform === 'win32' && Number.isSafeInteger(child.pid) && child.pid > 0 && child.pid !== process.pid) {
-    await new Promise(resolve => {
-      let killer;
-      const finish = () => { clearTimeout(timer); resolve(); };
-      const timer = setTimeout(() => { killer?.kill(); finish(); }, 3000);
-      try {
-        killer = spawnImpl(path.win32.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        killer.once('exit', finish); killer.once('error', finish);
-      } catch { finish(); }
-    });
-    if (child.exitCode != null || child.signalCode != null) return;
-  }
-  await new Promise(resolve => {
-    const finish = () => { clearTimeout(timer); child.removeListener('exit', finish); resolve(); };
-    const timer = setTimeout(finish, 2000);
-    child.once('exit', finish);
-    try { if (!child.kill()) finish(); } catch { finish(); }
-  });
-}
-
-function makeUpdateScript({ parentPid, installer, appExe, scriptPath, expectedHash, readyToken = HELPER_READY }) {
-  if (!Number.isSafeInteger(parentPid) || parentPid < 1 || !normalizeDigest(expectedHash)) throw new Error('Invalid updater parameters');
-  // The signed-in user's NSIS installer owns file replacement, registration and restart.
-  // These switches are defined by electron-builder's NsisTarget and installSection.nsh.
-  return `$ErrorActionPreference = 'Stop'
-$installer = ${psLiteral(installer)}
-$appExe = ${psLiteral(appExe)}
-$scriptPath = ${psLiteral(scriptPath)}
-$stageDir = [System.IO.Path]::GetDirectoryName($installer)
-$readyPath = [System.IO.Path]::Combine($stageDir, 'helper-ready.json')
-$readyToken = ${psLiteral(readyToken)}
-$expected = ${psLiteral(expectedHash.toLowerCase())}
-$installed = $false
-$canonicalAppExe = $null
-function Test-ParentRunning {
-  try { return -not [System.Diagnostics.Process]::GetProcessById(${parentPid}).HasExited } catch { return $false }
-}
-function Find-AppProcess {
-  if (-not $canonicalAppExe) { return $null }
-  foreach ($candidate in [System.Diagnostics.Process]::GetProcessesByName([System.IO.Path]::GetFileNameWithoutExtension($canonicalAppExe))) {
-    try {
-      $candidatePath = [AllradioneUpdatePaths]::Canonical($candidate.MainModule.FileName)
-      if (-not $candidate.HasExited -and $candidatePath -and [string]::Equals($candidatePath, $canonicalAppExe, [System.StringComparison]::OrdinalIgnoreCase)) { return $candidate }
-    } catch {}
-  }
-  return $null
-}
-try {
-  # Use Windows' own module even when another PowerShell edition changed PSModulePath.
-  Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1" -ErrorAction Stop
-  Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
-  # Resolve through an actual file handle: GetFullPath preserves 8.3 names and
-  # cannot identify junction aliases of the same installed executable.
-  Add-Type -TypeDefinition @'
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-public static class AllradioneUpdatePaths {
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint capacity, uint flags);
-  public static string Canonical(string name) {
-    if (String.IsNullOrEmpty(name)) return null;
-    using (SafeFileHandle file = CreateFile(name, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
-      if (file.IsInvalid) return null;
-      StringBuilder path = new StringBuilder(512);
-      uint length = GetFinalPathNameByHandle(file, path, (uint)path.Capacity, 0);
-      if (length == 0) return null;
-      if (length >= path.Capacity) {
-        path = new StringBuilder(checked((int)length + 1));
-        length = GetFinalPathNameByHandle(file, path, (uint)path.Capacity, 0);
-      }
-      return length > 0 && length < path.Capacity ? path.ToString() : null;
-    }
-  }
-}
-'@ -ErrorAction Stop
-  # Use .NET directly: inherited PSModulePath can hide Get-FileHash in Windows PowerShell.
-  $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
-  $installerStream = $null
-  try {
-    $installerStream = [System.IO.File]::OpenRead($installer)
-    $actualHash = ([System.BitConverter]::ToString($hashAlgorithm.ComputeHash($installerStream))).Replace('-', '').ToLowerInvariant()
-  } finally {
-    if ($installerStream) { $installerStream.Dispose() }
-    $hashAlgorithm.Dispose()
-  }
-  if ($actualHash -ne $expected) { throw 'SHA256 mismatch' }
-  if (-not [System.IO.File]::Exists($appExe)) { throw 'Installed application was not found' }
-  $canonicalAppExe = [AllradioneUpdatePaths]::Canonical($appExe)
-  if (-not $canonicalAppExe) { throw 'Installed application path could not be resolved' }
-  # Spawn only confirms powershell.exe exists. Acknowledge successful script startup
-  # and checksum verification before the application is allowed to close.
-  $readyRecord = @{ token=$readyToken; pid=$PID; parentPid=${parentPid}; sha256=$expected } | ConvertTo-Json -Compress
-  [System.IO.File]::WriteAllText($readyPath + '.tmp', $readyRecord, [System.Text.UTF8Encoding]::new($false))
-  [System.IO.File]::Move($readyPath + '.tmp', $readyPath)
-  # Detached console hosts may replace inherited stdout handles. The owned,
-  # nonce-bound file is authoritative; console output is only diagnostic.
-  try { [Console]::Out.WriteLine('${HELPER_READY}'); [Console]::Out.Flush() } catch {}
-  Wait-Process -Id ${parentPid} -Timeout 90 -ErrorAction SilentlyContinue
-  if (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { throw 'Original process did not stop' }
-  $setup = Start-Process -FilePath $installer -ArgumentList @('/S', '--updated', '--force-run') -PassThru -ErrorAction Stop
-  # Cache the handle before exit so Windows PowerShell can read ExitCode reliably.
-  $null = $setup.Handle
-  # Wait only for NSIS. Start-Process -Wait also waits for the restarted app.
-  $setup.WaitForExit()
-  if ($setup.ExitCode -ne 0) { throw ('Installer failed or was canceled. Exit code: ' + $setup.ExitCode) }
-  # Explorer's shell-based launch can fail while NSIS still reports success.
-  # Give its launch a moment, then start the installed executable only if absent.
-  $restartDeadline = [DateTime]::UtcNow.AddSeconds(3)
-  $running = Find-AppProcess
-  while (-not $running -and [DateTime]::UtcNow -lt $restartDeadline) {
-    [System.Threading.Thread]::Sleep(200)
-    $running = Find-AppProcess
-  }
-  if (-not $running) {
-    Start-Process -FilePath $appExe -WorkingDirectory ([System.IO.Path]::GetDirectoryName($appExe)) -ErrorAction Stop
-    $restartDeadline = [DateTime]::UtcNow.AddSeconds(15)
-    while (-not $running -and [DateTime]::UtcNow -lt $restartDeadline) {
-      [System.Threading.Thread]::Sleep(200)
-      $running = Find-AppProcess
-    }
-  }
-  if (-not $running) { throw 'Updated application did not restart' }
-  $installed = $true
-} catch {
-  try { [System.IO.File]::WriteAllText([System.IO.Path]::Combine($stageDir, 'update-error.txt'), [string]$_, [System.Text.Encoding]::UTF8) } catch {}
-  if (-not (Test-ParentRunning) -and -not (Find-AppProcess) -and [System.IO.File]::Exists($appExe)) {
-    Start-Process -FilePath $appExe -WorkingDirectory ([System.IO.Path]::GetDirectoryName($appExe)) -ErrorAction SilentlyContinue
-  }
-} finally {
-  try { [System.IO.File]::Delete($readyPath + '.tmp') } catch {}
-  try { [System.IO.File]::Delete($readyPath) } catch {}
-  try { [System.IO.File]::Delete($installer) } catch {}
-  try { [System.IO.File]::Delete($scriptPath) } catch {}
-  if ($installed) {
-    try { [System.IO.File]::Delete([System.IO.Path]::Combine($stageDir, '${STAGE_MARKER}')) } catch {}
-    try { [System.IO.Directory]::Delete($stageDir) } catch {}
-  }
-}
-`;
-}
-
-function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn, helperTimeoutMs = 30000, scheduleQuit = callback => setTimeout(callback, 400) }) {
+function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = process.platform, env = process.env, spawnImpl = spawn }) {
   let checked = null;
   let installing = false;
   const currentVersion = app.getVersion();
@@ -352,11 +133,11 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
   }
 
   async function installUpdate() {
-    if (installing) return { status: 'installing', message: '업데이트를 다운로드하고 있어.' };
+    if (installing) return { status: 'opened', message: '업데이트를 진행하고 있어.' };
     // Acquire before any await: two first-time clicks must not both check/install.
     installing = true;
     let stageDir;
-    let helper;
+    let setup;
     let handedOff = false;
     try {
       // Refresh even after an earlier check: assets may have finished uploading,
@@ -381,7 +162,7 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       const updateRoot = path.join(dataDir, 'updates');
       await fs.mkdir(updateRoot, { recursive: true });
       stageDir = await fs.mkdtemp(path.join(updateRoot, 'release-'));
-      await createStageMarker(stageDir, { installerName: asset.name });
+      await createStageMarker(stageDir, { installerName: asset.name, interactive: true });
       const stagedExe = path.join(stageDir, asset.name);
       const response = await fetchResponse(asset.browser_download_url, { fetchImpl, signal: AbortSignal.timeout(10 * 60 * 1000) });
       if (!response.ok || !response.body) throw new Error(`다운로드 오류 (${response.status}).`);
@@ -389,51 +170,62 @@ function createUpdater({ app, shell, dataDir, fetchImpl = fetch, platform = proc
       if (declared > MAX_EXE_BYTES) throw new Error('업데이트 파일이 너무 커.');
       const handle = await fs.open(stagedExe, 'wx');
       let bytes = 0;
-      const hash = crypto.createHash('sha256');
       let magic = Buffer.alloc(0);
       try {
         for await (const chunk of response.body) {
           bytes += chunk.length;
           if (bytes > MAX_EXE_BYTES) throw new Error('업데이트 파일이 너무 커.');
           if (magic.length < 2) magic = Buffer.concat([magic, Buffer.from(chunk)]).subarray(0, 2);
-          hash.update(chunk);
           await handle.writeFile(chunk);
         }
         await handle.sync();
       } finally { await handle.close(); }
       if (bytes < 1024 || magic.toString('ascii') !== 'MZ') throw new Error('정상적인 Windows 실행 파일이 아니야.');
+      const hash = crypto.createHash('sha256');
+      for await (const chunk of createReadStream(stagedExe)) hash.update(chunk);
       if (hash.digest('hex') !== digest) throw new Error('다운로드 파일의 체크섬이 일치하지 않아.');
-      const scriptPath = path.join(stageDir, 'apply-update.ps1');
-      const readyToken = crypto.randomBytes(24).toString('hex');
-      const script = makeUpdateScript({ parentPid: process.pid, installer: stagedExe, appExe, scriptPath, expectedHash: digest, readyToken });
-      const scriptBytes = Buffer.from('\ufeff' + script, 'utf8');
-      await fs.writeFile(scriptPath, scriptBytes);
-      const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
-      const launch = makeHelperLaunch({ systemRoot, scriptPath, scriptHash: crypto.createHash('sha256').update(scriptBytes).digest('hex') });
-      const helperEnv = { ...env };
-      const blockedEnv = new Set(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH']);
-      for (const key of Object.keys(helperEnv)) if (blockedEnv.has(key.toUpperCase())) delete helperEnv[key];
-      // Execute our generated literal script directly. No machine or process policy changes.
-      // Its working directory must remain outside the installation being replaced.
-      helper = spawnImpl(launch.executable, launch.args, { detached: true, windowsHide: true, windowsVerbatimArguments: true, cwd: dataDir, env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
-      await waitForHelperReady(helper, { timeoutMs: helperTimeoutMs, readyFile: path.join(stageDir, 'helper-ready.json'), readyToken, parentPid: process.pid, expectedHash: digest });
-      await setStageOwner(stageDir, helper.pid);
-      helper.stdout.unref?.();
-      helper.stderr.unref?.();
-      helper.unref();
+      const setupEnv = { ...env };
+      for (const key of Object.keys(setupEnv)) {
+        if (['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH'].includes(key.toUpperCase())) delete setupEnv[key];
+      }
+      setup = spawnImpl(stagedExe, ['--updated', '/ALLRADIONEAPP=' + process.pid], {
+        cwd: dataDir, env: setupEnv, stdio: 'ignore', detached: true, windowsHide: false
+      });
+      // Register before spawn settles: the user may immediately cancel the wizard.
+      let finished = false;
+      let confirmationTimer;
+      const exited = new Promise(resolve => setup.once('exit', () => {
+        finished = true;
+        clearInterval(confirmationTimer);
+        resolve();
+      }));
+      await once(setup, 'spawn');
+      await setStageOwner(stageDir, setup.pid);
       handedOff = true;
-      scheduleQuit(() => app.quit());
-      return { status: 'installing', message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' };
+      setup.unref();
+      if (!finished) {
+        // Only the Next button in the visible welcome page writes this marker.
+        confirmationTimer = setInterval(async () => {
+          try { await fs.access(path.join(stageDir, 'setup-confirmed')); } catch { return; }
+          if (finished || !confirmationTimer) return;
+          clearInterval(confirmationTimer);
+          confirmationTimer = null;
+          app.quit();
+        }, 150);
+        confirmationTimer.unref();
+      }
+      void exited.then(async () => {
+        try { await cleanupUpdateStages(dataDir); }
+        finally { installing = false; }
+      }).catch(() => {});
+      return { status: 'opened', message: '설치 창이 열렸어.' };
     } catch (error) {
-      // The still-open app keeps the helper waiting. Stop it before deleting its
-      // installer, including when readiness or the ownership handoff failed.
-      if (!handedOff) await stopHelper(helper, { env });
-      // Only our unique staging directory is removed. Existing app/settings stay intact.
-      if (stageDir) await fs.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+      if (setup?.pid && !handedOff) setup.kill();
+      if (stageDir && !handedOff) await discardDownload(stageDir).catch(() => {});
       return { status: 'retry', message: `업데이트를 적용하지 못했어. ${error.message}` };
     } finally { if (!handedOff) installing = false; }
   }
   return { checkUpdate, installUpdate };
 }
 
-module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, makeUpdateScript, makeHelperLaunch, waitForHelperReady, stopHelper, HELPER_READY, readLimited, fetchResponse };
+module.exports = { createUpdater, parseVersion, isNewer, allowedAssetUrl, allowedRedirect, selectAsset, normalizeDigest, checksumFor, readLimited, fetchResponse };

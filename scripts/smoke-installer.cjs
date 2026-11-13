@@ -14,9 +14,9 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
 const MARKER = 'allradione-owner.txt';
-const BASELINE_VERSION = '0.2.2';
+const BASELINE_VERSION = '0.2.4';
 const BASELINE_URL = `https://github.com/samueltoken/Allradione/releases/download/v${BASELINE_VERSION}/Allradione-Setup-${BASELINE_VERSION}-x64.exe`;
-const BASELINE_SHA256 = 'ab3073deec4d072c5c7ad89b075c01ba4bbc166b6b4eadaf6ae803d251fa81bd';
+const BASELINE_SHA256 = '9ae1cccc7b8e372d9643ba2ce1319b9dcbd5bc0a065e66177b2a3fc5de51d63f';
 const canonicalPath = promisify(realpath.native);
 
 function sameWindowsPath(left, right) {
@@ -164,93 +164,80 @@ async function readReleasedUpdater(installDirectory) {
   };
 }
 
-async function exerciseUpdateHandoff({ installer, executable, userData, fromVersion, toVersion }) {
-  const { makeUpdateScript } = require('../electron/updater.cjs');
-  const artifact = name => path.join(OUTPUT, `update-${fromVersion}-to-${toVersion}-${name}`);
-  const updateRoot = path.join(userData, 'updates');
-  await fs.mkdir(updateRoot, { recursive: true });
-  const stage = await fs.mkdtemp(path.join(updateRoot, 'release-smoke-'));
-  const stagedInstaller = path.join(stage, path.basename(installer));
-  const scriptPath = path.join(stage, 'apply-update.ps1');
-  await fs.copyFile(installer, stagedInstaller);
-  const hash = crypto.createHash('sha256');
-  for await (const chunk of createReadStream(stagedInstaller)) hash.update(chunk);
-  const digest = hash.digest('hex');
-
-  // A controlled short-lived process stands in for the old app's PID. Its exit is
-  // released only after checking that the unchanged production handoff is waiting.
-  const oldProcess = spawn(process.execPath, ['-e', "process.stdin.once('data',()=>process.exit(0));setTimeout(()=>process.exit(0),60000)"], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
-  await new Promise((resolve, reject) => { oldProcess.once('spawn', resolve); oldProcess.once('error', reject); });
-  await require('../electron/update-staging.cjs').createStageMarker(stage, { pid: oldProcess.pid, installerName: path.basename(stagedInstaller) });
-  const script = makeUpdateScript({ parentPid: oldProcess.pid, installer: stagedInstaller, appExe: executable, scriptPath, expectedHash: digest });
-  assert.match(script, /-ArgumentList @\('\/S', '--updated', '--force-run'\)/, 'Execute the production silent-update and restart flags');
-  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
-  await fs.writeFile(artifact('generated.ps1'), '\ufeff' + script, 'utf8');
-  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  let finished = false;
-  const handoff = runProcess(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 180000, waitForExit: true, captureOutput: true })
-    .then(output => ({ ok: true, output }), error => ({ ok: false, error, output: { exitCode: error.exitCode ?? null, stdout: error.stdout || '', stderr: error.stderr || '' } }))
-    .then(async result => {
-      await fs.writeFile(artifact('process.json'), JSON.stringify({ ok: result.ok, ...result.output, error: result.error?.message }, null, 2));
-      return result;
-    }).finally(() => { finished = true; });
-  const checkHandoffFailure = async () => {
-    const errorLog = path.join(stage, 'update-error.txt');
-    if (await exists(errorLog)) {
-      const message = (await fs.readFile(errorLog, 'utf8')).replace(/^\uFEFF/, '').slice(0, 16000);
-      await fs.writeFile(artifact('error.txt'), message);
-      throw new Error(`Generated update handoff failed: ${message}`);
-    }
-    if (finished) { const result = await handoff; if (!result.ok) throw result.error; }
-  };
-  let restartObserved = false;
-  try {
-    await new Promise(resolve => setTimeout(resolve, 2500));
-    await checkHandoffFailure();
-    assert.equal(oldProcess.exitCode, null, 'Controlled old process must still be alive');
-    if (finished) {
-      const result = await handoff;
-      throw new Error(`Update handoff exited before the old process stopped: ${JSON.stringify(result.output)}`);
-    }
-    assert.ok(await exists(stagedInstaller), 'Waiting handoff must retain its staged installer');
-    assert.equal((await ownedProcesses(await windowsSnapshot(), executable)).length, 0, 'The app must not restart before the old process exits');
-    oldProcess.stdin.end('exit');
-    await poll(() => oldProcess.exitCode !== null, 'controlled old process exits', 5000);
-
-    await poll(async () => {
-      await checkHandoffFailure();
-      const snapshot = await windowsSnapshot();
-      restartObserved ||= (await ownedProcesses(snapshot, executable)).some(process => process.windowHandle !== 0);
-      return restartObserved && !(await exists(stage));
-    }, 'production updater restarts installed app and removes its staging directory', 180000);
-    const result = await handoff;
-    if (!result.ok) throw result.error;
-    assert.equal(await exists(stagedInstaller), false, 'Successful updater must delete its staged installer');
-    assert.equal(await exists(scriptPath), false, 'Successful updater must delete its generated script');
-    await stopOwnedRestart(executable);
-    return { check: 'production PowerShell update handoff waits, upgrades, restarts and clears staging', passed: true, fromVersion, toVersion, helperSource: 'current source build', flags: ['/S', '--updated', '--force-run'], parentWaitObserved: true, restartObserved, crossVersionUpdateTested: fromVersion !== toVersion };
-  } catch (error) {
-    let actualHash = null;
-    let actualHashError = null;
-    try {
-      if (await exists(stagedInstaller)) {
-        const actual = crypto.createHash('sha256');
-        for await (const chunk of createReadStream(stagedInstaller)) actual.update(chunk);
-        actualHash = actual.digest('hex');
+async function operateSetupWindow(pid, cancel = false) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SetupControls {
+  [DllImport("user32")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
+  [DllImport("user32")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32")] public static extern bool IsWindowEnabled(IntPtr hwnd);
+  [DllImport("user32")] public static extern IntPtr GetLastActivePopup(IntPtr hwnd);
+  [DllImport("user32")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+}
+'@
+    $setup = Get-Process -Id ${pid}
+    $visible = $false
+    $clicked = 0
+    $deadline = [DateTime]::UtcNow.AddMinutes(2)
+    while (-not $setup.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+      $setup.Refresh()
+      $window = $setup.MainWindowHandle
+      if ($window -ne [IntPtr]::Zero -and [SetupControls]::IsWindowVisible($window)) {
+        $visible = $true
+        $active = [SetupControls]::GetLastActivePopup($window)
+        if ($active -eq [IntPtr]::Zero) { $active = $window }
+        $id = ${cancel ? 2 : 1}
+        if (${cancel ? '$true' : '$false'}) {
+          $yes = [SetupControls]::GetDlgItem($active, 6)
+          if ($yes -ne [IntPtr]::Zero) { $id = 6 }
+        }
+        $button = [SetupControls]::GetDlgItem($active, $id)
+        if ($button -ne [IntPtr]::Zero -and [SetupControls]::IsWindowVisible($button) -and [SetupControls]::IsWindowEnabled($button)) {
+          [void][SetupControls]::PostMessage($button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+          $clicked++
+        }
       }
-    } catch (diagnosticError) {
-      // The detached helper can remove the installer between exists() and open().
-      // A diagnostic race must never replace the original update failure.
-      actualHashError = diagnosticError.code || diagnosticError.message;
+      Start-Sleep -Milliseconds 500
     }
-    await fs.writeFile(artifact('context.json'), JSON.stringify({ parentPid: oldProcess.pid, parentExitCode: oldProcess.exitCode, handoffFinished: finished, stageFiles: await fs.readdir(stage).catch(() => []), expectedHash: digest, actualHash, actualHashError, error: error.message }, null, 2)).catch(() => {});
-    throw error;
-  } finally {
-    if (oldProcess.exitCode === null && !oldProcess.stdin.writableEnded) oldProcess.stdin.end('exit');
-    await handoff;
-    // A failed handoff may also restart the original app. Close only this test's exact executable.
-    await stopOwnedRestart(executable).catch(() => {});
-  }
+    if (-not $setup.HasExited -or -not $visible -or $clicked -eq 0) { throw 'Visible Allradione installer did not finish' }
+    @{ visible = $visible; clicks = $clicked; exitCode = $setup.ExitCode } | ConvertTo-Json -Compress
+  `;
+  return JSON.parse(await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 150000 }));
+}
+
+async function startRadioFixture(application, page) {
+  // Exercise the real favorites control, RadioPlayer and decoder. Only the
+  // broadcast source is replaced with a deterministic three-minute PCM tone.
+  const url = await page.evaluate(() => {
+    const rate = 8000, count = rate * 180;
+    const bytes = new ArrayBuffer(44 + count * 2);
+    const view = new DataView(bytes);
+    const tag = (offset, text) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+    tag(0, 'RIFF'); view.setUint32(4, bytes.byteLength - 8, true); tag(8, 'WAVEfmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true); tag(36, 'data'); view.setUint32(40, count * 2, true);
+    for (let i = 0; i < count; i++) view.setInt16(44 + i * 2, Math.round(2000 * Math.sin(i * 440 * 2 * Math.PI / rate)), true);
+    const originalPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      window.__setupTestRadio = this;
+      return originalPlay.call(this);
+    };
+    return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  });
+  await application.evaluate(({ ipcMain }, blobUrl) => {
+    ipcMain.removeHandler('radio:stream');
+    ipcMain.handle('radio:stream', () => blobUrl);
+    ipcMain.removeHandler('radio:click');
+    ipcMain.handle('radio:click', () => null);
+  }, url);
+  await page.locator('[data-action="favorites"]').click();
+  await page.locator('.station-select').first().click();
+  await page.waitForFunction(() => window.__setupTestRadio?.currentTime > 0.1);
 }
 
 async function exerciseInstalledAppUpdate({ installer, executable, userData, fromVersion, toVersion, releasedUpdater, reportedCurrentVersion = null, legacyDiagnostic = false }) {
@@ -267,7 +254,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   for await (const chunk of createReadStream(installer)) hash.update(chunk);
   const digest = hash.digest('hex');
   const expectedSourceHash = releasedUpdater?.sha256 || crypto.createHash('sha256').update(await fs.readFile(path.join(ROOT, 'electron', 'updater.cjs'))).digest('hex');
-  const beforeSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
+  let beforeSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
   // Match a normal Start-menu launch: an inherited helper working directory inside
   // the installation must not be concealed by launching the app from the checkout.
   const application = await _electron.launch({ executablePath: executable, args: [], cwd: path.dirname(executable), env: environment, timeout: 30000 });
@@ -278,7 +265,7 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
   const readTrace = async () => { trace = await readLatestTrace(traceDirectory); return trace; };
   const checkFailure = async () => {
     const current = await readTrace();
-    if (current.result && !current.result.message.includes('설치 파일 검증 완료')) throw new Error(`Released updater did not hand off: ${current.result.message}`);
+    if (current.result && current.result.status !== (releasedUpdater ? 'installing' : 'opened')) throw new Error(`Released updater did not hand off: ${current.result.message}`);
     for (const stage of current.stageDirectories) {
       const errorFile = path.join(stage, 'update-error.txt');
       if (await exists(errorFile)) {
@@ -384,12 +371,45 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
     assert.ok(await sameWindowsFile(actual.cwd, path.dirname(executable)), 'Real app updater must inherit the installed working directory');
     assert.ok(await sameWindowsFile(actual.executable, executable), 'Updater must run inside the installed baseline executable');
     assert.ok(await sameWindowsFile(actual.userData, userData), 'Updater must use the genuine installed profile');
+    if (!releasedUpdater) {
+      await startRadioFixture(application, page);
+      beforeSettings = await page.evaluate(() => window.allradione.getPreferences());
+    }
     await page.locator('[data-action="settings"]').click();
     await page.locator('[data-action="check-update"]').click();
     await page.locator('[data-action="install-update"]').waitFor({ timeout: 30000 });
     assert.match(await page.locator('[data-action="install-update"]').innerText(), /다운로드 및 설치/, 'Released Settings must offer the native installer action');
     await page.screenshot({ path: path.join(OUTPUT, `${prefix}-before.png`) });
     await page.locator('[data-action="install-update"]').click();
+    let setupWindows;
+    if (!releasedUpdater) {
+      const waitForWizard = async previousPid => {
+        await poll(async () => {
+          await checkFailure();
+          return trace.result?.status === 'opened' && trace.helper?.pid && trace.helper.pid !== previousPid;
+        }, 'interactive setup opens from the real Settings button', 60000);
+        assert.ok(await sameWindowsFile(trace.helper.executable, path.join(trace.stageDirectories[0], path.basename(installer))));
+        assert.ok(processAlive(actual.pid), 'The player stays open until the user accepts the wizard');
+        return trace.helper.pid;
+      };
+      const first = await waitForWizard();
+      const cancelledStage = trace.stageDirectories[0];
+      const playedBeforeCancel = await page.evaluate(() => window.__setupTestRadio.currentTime);
+      const cancel = await operateSetupWindow(first, true);
+      await poll(async () => !(await exists(cancelledStage)), 'cancel removes its owned download');
+      assert.ok(processAlive(actual.pid), 'Cancelling Setup must leave the old app running');
+      const playedAfterCancel = await page.evaluate(() => {
+        const audio = window.__setupTestRadio;
+        return { seconds: audio.currentTime, playing: !audio.paused && !audio.ended && !audio.error };
+      });
+      assert.ok(playedAfterCancel.playing && playedAfterCancel.seconds > playedBeforeCancel, 'The same real audio element keeps playing through cancellation');
+      await page.locator('[data-action="check-update"]').click();
+      await page.locator('[data-action="install-update"]').click();
+      const second = await waitForWizard(first);
+      const finish = await operateSetupWindow(second);
+      assert.equal(finish.exitCode, 0);
+      setupWindows = { cancel, finish, playedBeforeCancel, playedAfterCancel };
+    }
     await poll(async () => { await checkFailure(); return parentExit.observed && !processAlive(actual.pid); }, 'actual installed application exits after its own updater handoff', legacyDiagnostic ? 30000 : 60000);
     assert.equal(parentExit.code, 0, 'Released updater must quit the original application normally');
     await checkFailure();
@@ -411,9 +431,9 @@ async function exerciseInstalledAppUpdate({ installer, executable, userData, fro
     const installedPackage = JSON.parse(extractInstalledFile(path.dirname(executable), 'package.json').toString('utf8'));
     assert.equal(installedPackage.version, toVersion, 'Restarted executable must have the new packaged application');
     const afterSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
-    for (const key of ['volume', 'favorites', 'recent', 'widgetEnabled', 'widgetSize', 'reducedMotion', 'lastCountry']) assert.deepEqual(afterSettings[key], beforeSettings[key], `Actual app update must preserve ${key}`);
+    for (const key of Object.keys(beforeSettings)) assert.deepEqual(afterSettings[key], beforeSettings[key], `Actual app update must preserve ${key}`);
     await stopOwnedRestart(executable);
-    return { check: 'actual installed app Settings update downloads, validates, exits, installs and restarts', passed: true, releaseGate: !legacyDiagnostic, fromVersion, toVersion, reportedUpdaterVersion: reportedCurrentVersion || fromVersion, updaterSource: releasedUpdater?.source || 'current installed app.asar', updaterSha256: actual.sourceHash, originalPid: actual.pid, launcherPid: parent.pid, launcherExit: parentExit, actualParentExited: true, workingDirectory: actual.cwd, restartPids: restarted.map(process => process.pid), originalInstallLocationPreserved: true, settingsPreserved: true, stageRemoved: true, transport: 'controlled metadata and local real NSIS bytes; production downloader/app lifecycle; diagnostic helper output observation' };
+    return { check: 'actual installed app Settings update downloads, validates, exits, installs and restarts', passed: true, setupWindows, releaseGate: !legacyDiagnostic, fromVersion, toVersion, reportedUpdaterVersion: reportedCurrentVersion || fromVersion, updaterSource: releasedUpdater?.source || 'current installed app.asar', updaterSha256: actual.sourceHash, originalPid: actual.pid, launcherPid: parent.pid, launcherExit: parentExit, actualParentExited: true, workingDirectory: actual.cwd, restartPids: restarted.map(process => process.pid), originalInstallLocationPreserved: true, settingsPreserved: true, stageRemoved: true, transport: 'controlled metadata and local real NSIS bytes; production downloader/app lifecycle; diagnostic helper output observation' };
   } catch (error) {
     const failureTrace = await readTrace().catch(() => null);
     const helper = failureTrace?.helper;
@@ -620,7 +640,6 @@ async function main() {
       assert.deepEqual(migrated.favorites.map(station => station.stationuuid), [legacyStation.stationuuid], 'Fresh installation must migrate portable favorites');
     });
     results.push({ check: 'fresh installer migrates adjacent portable settings without changing the source', passed: true });
-    results.push(await exerciseUpdateHandoff({ installer: setupCopy, executable, userData, fromVersion: packageJson.version, toVersion: packageJson.version }));
     const reportedCurrentVersion = '0.0.0';
     assert.ok(require('../electron/updater.cjs').isNewer(packageJson.version, reportedCurrentVersion), 'Same-build updater fixture must report an older semantic version');
     results.push(await exerciseInstalledAppUpdate({ installer: setupCopy, executable, userData, fromVersion: packageJson.version, toVersion: packageJson.version, reportedCurrentVersion }));

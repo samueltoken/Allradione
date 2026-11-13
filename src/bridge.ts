@@ -2,12 +2,17 @@ import type { AllradioneBridge, Country, PlayerState, Preferences, Station, Upda
 import { version as currentVersion } from '../package.json';
 import { resolveStationStream } from '../electron/nhk-radio.mjs';
 import { countriesFromRows, createStationReader, savedStations } from '../electron/station-catalog.mjs';
-const defaults:Preferences={volume:.65,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'',reducedMotion:false};
+const defaults:Preferences={language:'ko',backgroundPlayback:true,volume:.65,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'',reducedMotion:false};
 const channels = new BroadcastChannel('allradione-preview');
 let preferences:Preferences={...defaults};
 try { preferences={...defaults,...JSON.parse(localStorage.getItem('allradione-preferences')||'{}')}; } catch { /* Preserve working defaults on invalid local preferences. */ }
 preferences.favorites=savedStations(preferences.favorites);
 preferences.recent=savedStations(preferences.recent);
+channels.addEventListener('message',({data})=>{
+ if(data?.kind==='command' && data.command==='preferences-changed' && data.value && typeof data.value==='object') {
+   preferences={...preferences,...data.value};
+ }
+});
 const apiServers=['https://de1.api.radio-browser.info','https://nl1.api.radio-browser.info'];
 async function request<T>(path:string):Promise<T>{
  for(const server of apiServers){try{const res=await fetch(server+'/json/'+path,{signal:AbortSignal.timeout(9000)});if(!res.ok)continue;return await res.json() as T;}catch{}}
@@ -19,7 +24,7 @@ function newerRelease(tag:string){const match=/^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag
 export const desktop = !!window.allradione;
 export const bridge:AllradioneBridge = window.allradione || {
  async getPreferences(){return preferences;},
- async savePreferences(patch){preferences={...preferences,...patch};localStorage.setItem('allradione-preferences',JSON.stringify(preferences));return preferences;},
+ async savePreferences(patch){preferences={...preferences,...patch};localStorage.setItem('allradione-preferences',JSON.stringify(preferences));channels.postMessage({kind:'command',command:'preferences-changed',value:preferences});return preferences;},
  async countries(){return countriesFromRows(await request('countrycodes?hidebroken=true&order=stationcount&reverse=true')).sort((a,b)=>a.name.localeCompare(b.name,'ko'));},
  stations:readStations,
  async streamUrl(url){
@@ -32,6 +37,7 @@ export const bridge:AllradioneBridge = window.allradione || {
  },
  async stationClick(id){if(/^[a-f\d-]{36}$/i.test(id))await request('url/'+id).catch(()=>undefined);},
  async setWidget(){throw new Error('위젯은 Windows 데스크톱 앱에서 사용할 수 있어.');},
+ async resizeWidget(){},
  publishPlayer(state){channels.postMessage({kind:'player',state});},
  onPlayer(fn){const listener=(event:MessageEvent)=>{if(event.data?.kind==='player')fn(event.data.state as PlayerState);};channels.addEventListener('message',listener);return()=>channels.removeEventListener('message',listener);},
  sendCommand(command,value){channels.postMessage({kind:'command',command,value});},

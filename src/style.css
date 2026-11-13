@@ -109,6 +109,32 @@ html.widget-root,html.widget-root body,html.widget-root #app{background:transpar
 html.widget-root{height:100%;width:100%}
 .widget-body #app{isolation:isolate}
 .mini-widget{background:transparent!important}
+.widget-body #app > .mini-widget,.widget-body #app > .retro-widget{width:100%;height:100%}
+.widget-body .widget-resize{position:fixed;z-index:5;top:4px;left:4px;width:20px;height:20px;touch-action:none;cursor:nwse-resize;border:0;background:transparent;padding:0;opacity:0;transition:opacity .16s;-webkit-app-region:no-drag}
+.widget-resize::after{content:'';position:absolute;inset:5px;border-left:2px solid #cad4b4;border-top:2px solid #cad4b4;border-radius:4px 0 0 0;filter:drop-shadow(0 1px 2px #101410)}
+.widget-body:hover .widget-resize,.widget-resize:focus-visible{opacity:1}
+.widget-small .mini-widget .radar-play{width:min(calc(100% - 14px),calc(100dvh - 31px));height:auto;aspect-ratio:1;left:50%;translate:-50% 0;top:0}
+.widget-small .mini-widget .mini-station{top:auto;bottom:17px;min-width:0;max-width:calc(100% - 10px);left:5px;right:5px}
+.widget-small .widget-drag{pointer-events:none}
+@media(max-width:148px){
+ .widget-small .mini-widget .mini-station{font-size:9px;padding:2px 4px}
+ .widget-small .widget-hover-controls{left:5px;right:5px}
+}
+@media(max-height:212px){
+ .widget-medium .retro-face{height:clamp(24px,calc(100dvh - 138px),60px);min-height:0}
+ .widget-medium .retro-face .retro-readout>strong{font-size:clamp(18px,15vh,32px);line-height:1.1}
+ .widget-medium .retro-arc{width:30%;height:100%;top:0;right:10px}
+ .widget-medium .retro-wave{height:clamp(4px,calc(100dvh - 160px),20px);min-height:0;margin-top:2px;overflow:hidden}
+ .widget-medium .retro-wave .waveform{height:100%}
+ .widget-medium .retro-screen{padding:7px 12px}
+ .widget-medium .retro-transport{padding-top:2px;gap:6px}
+ .widget-medium .retro-station{font-size:16px;line-height:1.2;min-height:20px}
+}
+@media(max-height:160px){
+ .widget-medium .retro-face,.widget-medium .retro-wave{display:none}
+ .widget-medium .retro-identity{margin-top:5px}
+ .widget-medium .retro-volume input{width:48px}
+}
 .radar-play{background:radial-gradient(circle,#10170edb 0 59%,#10170e98 60%,transparent 63%);filter:none}
 .radar-play:active{transform:none!important}
 .radar-play:focus-visible{outline-color:#b5d55a;outline-offset:-8px}

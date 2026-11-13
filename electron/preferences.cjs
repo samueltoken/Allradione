@@ -2,12 +2,19 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {savedStations}=require('./station-catalog.mjs');
-const DEFAULTS={volume:.7,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'KR',reducedMotion:false};
+const languages=require('./languages.json');
+const {widgetDimensions}=require('./widget-geometry.cjs');
+const DEFAULTS={language:'ko',backgroundPlayback:true,volume:.7,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'KR',reducedMotion:false};
 function cleanPreferences(patch,old=DEFAULTS){
   const out={...old};if(!patch||typeof patch!=='object')return out;
+  if(typeof patch.language==='string' && Object.hasOwn(languages,patch.language))out.language=patch.language;
   if(Number.isFinite(patch.volume))out.volume=Math.min(1,Math.max(0,patch.volume));
-  for(const key of ['widgetEnabled','reducedMotion'])if(typeof patch[key]==='boolean')out[key]=patch[key];
+  for(const key of ['widgetEnabled','reducedMotion','backgroundPlayback'])if(typeof patch[key]==='boolean')out[key]=patch[key];
   if(['small','medium'].includes(patch.widgetSize))out.widgetSize=patch.widgetSize;
+  if(patch.widgetWidths && typeof patch.widgetWidths==='object'){
+    out.widgetWidths={...old.widgetWidths};
+    for(const kind of ['small','medium']) if(Number.isFinite(patch.widgetWidths[kind]))out.widgetWidths[kind]=widgetDimensions(kind,patch.widgetWidths[kind]).width;
+  }
   if(/^[A-Z]{2}$/.test(patch.lastCountry))out.lastCountry=patch.lastCountry;
   for(const key of ['favorites','recent'])if(Array.isArray(patch[key]))out[key]=savedStations(patch[key].slice(0,key==='favorites'?1000:100));
   return out;

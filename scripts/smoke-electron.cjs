@@ -70,7 +70,7 @@ async function assertWidget(kind, width, height) {
   if (!virtualDisplay) assert.ok(Math.abs(state.bounds.width - width) <= tolerance, `${kind} widget width: ${JSON.stringify(state)}`);
   if (!virtualDisplay) assert.ok(Math.abs(state.bounds.height - height) <= tolerance, `${kind} widget height: ${JSON.stringify(state)}`);
   if (!virtualDisplay) assert.equal(state.alwaysOnTop, true, `${kind} widget must be always on top`);
-  assert.equal(state.resizable, false, `${kind} widget should retain its designed size`);
+  assert.equal(state.resizable, false, `${kind} widget uses its anchored resize handle`);
   assert.equal(state.contextIsolation, true, 'Renderer context isolation');
   assert.equal(state.nodeIntegration, false, 'Node must not be exposed in the renderer');
   assert.equal(state.sandbox, true, 'Widget renderer sandbox');
@@ -376,7 +376,7 @@ async function assertUpdateControls(main) {
       qa.installs++;
       if (qa.outcome === 'hold') return new Promise(resolve => { qa.resolve = resolve; });
       return qa.outcome === 'installing'
-        ? { status: 'installing', message: '설치 파일 검증 완료. 업데이트 후 다시 시작할게.' }
+        ? { status: 'opened', message: '설치 창이 열렸어.' }
         : { status: 'retry', message: '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.' };
     });
   });
@@ -416,9 +416,9 @@ async function assertUpdateControls(main) {
     await main.locator('[data-action="settings"]').click();
     await main.locator('[data-action="check-update"]').click();
     await install.click();
-    await expect(install).toContainText('설치 및 재시작 중');
-    await expect(install).toBeDisabled();
-    await expect(main.locator('#update-message')).toHaveText('설치 파일 검증 완료. 업데이트 후 다시 시작할게.');
+    await expect(main.locator('[data-action="check-update"]')).toContainText('다시 확인');
+    await expect(main.locator('[data-action="check-update"]')).toBeEnabled();
+    await expect(main.locator('#update-message')).toHaveText('설치 창이 열렸어.');
     await main.screenshot({ path: path.join(OUTPUT, 'settings-update-ui-fixture.png') });
     await main.keyboard.press('Escape');
     const calls = await application.evaluate(() => ({ checks: globalThis.__allradioneUpdateQa.checks, installs: globalThis.__allradioneUpdateQa.installs }));
@@ -527,6 +527,32 @@ async function assertWidgetState(widget) {
   await expect(widget.locator('body')).toHaveClass(/is-playing/);
 }
 
+async function checkWidgetResize(page, kind, minimum, maximum) {
+  const handle=page.locator('.widget-resize');
+  const grip=await handle.boundingBox();
+  await page.mouse.move(grip.x+grip.width/2,grip.y+grip.height/2);
+  await page.mouse.down(); await page.mouse.move(grip.x+grip.width/2+14,grip.y+grip.height/2+4); await page.mouse.up();
+  await expect.poll(async()=>(await nativeWindow(kind)).bounds.width).toBeLessThan(maximum[0]-5);
+  await page.evaluate(w=>window.allradione.resizeWidget(w,true),maximum[0]);
+  await assertWidget(kind,...maximum);
+  await handle.focus(); await handle.press('ArrowRight');
+  await expect.poll(async()=>Math.abs((await nativeWindow(kind)).bounds.width - (maximum[0]-8))).toBeLessThanOrEqual(2);
+  await page.evaluate(()=>window.allradione.resizeWidget(1,true));
+  await assertWidget(kind,...minimum);
+  for(const selector of ['#widget-play','[data-widget-name]','[data-widget-action="show"]','[data-widget-action="close"]']){
+    const fits=await page.locator(selector).evaluate(el=>{
+      const r=el.getBoundingClientRect();
+      return r.width>0 && r.height>0 && r.left>=0 && r.top>=0 && r.right<=innerWidth+1 && r.bottom<=innerHeight+1;
+    });
+    assert.ok(fits,kind+' minimum must expose '+selector);
+  }
+  await page.evaluate(()=>window.allradione.resizeWidget(10000,true));
+  await assertWidget(kind,...maximum);
+  await page.evaluate(w=>window.allradione.resizeWidget(w,true),minimum[0]);
+  await assertWidget(kind,...minimum);
+  results.push({check:kind+' anchored resize, minimum and maximum, visible controls'});
+}
+
 async function run() {
   const installedMode = process.env.ALLRADIONE_SMOKE_INSTALLED === '1';
   const executablePath = process.env.ALLRADIONE_SMOKE_EXECUTABLE
@@ -610,6 +636,7 @@ async function run() {
   await small.locator('#widget-play').click();
   await expect.poll(() => main.evaluate(() => window.__allradioneSmokeCommands.some(item => item.command === 'toggle-play')), { timeout: TIMEOUT }).toBe(true);
   results.push({ check: 'small widget playback command reached main renderer', passed: true });
+  await checkWidgetResize(small,'small',[112,126],[176,190]);
 
   await main.evaluate(() => window.allradione.setWidget(true, 'medium'));
   const medium = await findWidget('medium');
@@ -619,11 +646,12 @@ async function run() {
   await assertWidgetState(medium);
   await expect(medium.locator('#widget-volume')).toHaveValue('42');
   await assertAudioDrivenWidget(main, medium, 'medium');
+  await checkWidgetResize(medium,'medium',[272,136],[460,230]);
 
   await main.evaluate(() => window.allradione.windowAction('close'));
   await expect.poll(async () => (await nativeWindow('main'))?.visible, { timeout: TIMEOUT }).toBe(false);
   assert.equal(main.isClosed(), false, 'Closing the main view must preserve the playback owner while a widget exists');
-  await assertWidget('medium', 460, 230);
+  await assertWidget('medium', 272, 136);
   await assertWidgetState(medium);
   results.push({ check: 'main close retains hidden playback window and visible widget', passed: true });
 
@@ -635,9 +663,33 @@ async function run() {
   const preferences = await main.evaluate(() => window.allradione.getPreferences());
   assert.equal(preferences.widgetEnabled, false, 'Disabling the widget must persist');
   assert.equal(preferences.widgetSize, 'medium', 'Last widget size must persist');
+  assert.deepEqual(preferences.widgetWidths,{small:112,medium:272});
+  await main.evaluate(()=>window.allradione.setWidget(true,'small'));
+  await findWidget('small'); await assertWidget('small',112,126);
+  await main.evaluate(()=>window.allradione.setWidget(false,'small'));
+  // Capture the native tray menu while the language switches, then invoke its real callback.
+  await application.evaluate(({Tray})=>{
+    const setContextMenu=Tray.prototype.setContextMenu;
+    Tray.prototype.setContextMenu=function(menu){globalThis.__allradioneSmokeTrayMenu=menu;return setContextMenu.call(this,menu);};
+  });
+  await main.evaluate(()=>window.allradione.savePreferences({language:'en'}));
+  const trayLabels=await application.evaluate(()=>globalThis.__allradioneSmokeTrayMenu?.items.map(item=>item.label));
+  assert.ok(trayLabels?.includes('Open Allradione') && trayLabels.includes('Quit'),'Tray menu reflects the new language');
+  await main.evaluate(()=>window.allradione.windowAction('close'));
+  await expect.poll(async()=>(await nativeWindow('main'))?.visible).toBe(false);
+  assert.equal(main.isClosed(),false,'Tray retains playback without a widget');
+  await application.evaluate(()=>globalThis.__allradioneSmokeTrayMenu.items[0].click());
+  await expect.poll(async()=>(await nativeWindow('main'))?.visible).toBe(true);
+  await main.evaluate(()=>window.allradione.savePreferences({language:'ko'}));
   await main.evaluate(() => window.__allradioneSmokeUnsubscribe?.());
   await captureCountryAndPlayback(main);
   await assertDialAndFlags(main);
+  await main.evaluate(()=>window.allradione.setWidget(true,'medium'));
+  const lastWidget=await findWidget('medium');
+  await main.evaluate(async()=>{await window.allradione.savePreferences({backgroundPlayback:false});window.allradione.windowAction('close');});
+  await expect.poll(()=>main.isClosed()).toBe(true);
+  await expect.poll(()=>lastWidget.isClosed()).toBe(true);
+  results.push({check:'Background playback off closes playback owner and active widget'});
   assert.deepEqual(rendererErrors, [], 'Unexpected renderer errors');
   results.push({ check: 'restore main and disable widget', passed: true });
   await fs.writeFile(path.join(OUTPUT, 'smoke-electron.json'), JSON.stringify({ passed: true, platform: process.platform, results }, null, 2));

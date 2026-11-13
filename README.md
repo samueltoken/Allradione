@@ -29,16 +29,16 @@
 
 - **Station operators.** Each country has tabs for confirmed broadcasters, independent stations, unconfirmed operators, and the full list. Station details include the operator, relay and source when available.
 - **Your stations.** Search the directory, save favorites, and return to recent listening.
-- **Global chat.** Open the red speech bubble on the main window to chat across countries. Choose a nickname or use the assigned Ano number.
+- **Global chat.** Open the red speech bubble to chat across countries. Choose a nickname or use the assigned Ano number. While you are in chat, others can see the station you are playing. Click a message to report it.
 - **Sound in motion.** Visualizers respond to the actual audio signal and settle when playback is silent.
 - **A considered interface.** Sora, Pretendard, and IBM Plex Mono pair clear typography with an instrument-inspired layout.
-- **Everyday controls.** Volume, sleep timer, reduced motion, and in-app updates.
+- **Settings.** Choose Korean, English, Japanese, Simplified Chinese, Cantonese, Taiwanese Mandarin, Taiwanese Hokkien or Latin. Adjust background playback, the sleep timer and motion here.
 
 ## Start listening
 
 1. Download `Allradione-Setup-<version>-x64.exe` from the [latest release](https://github.com/samueltoken/Allradione/releases/latest).
 2. Run Setup, then open Allradione from the desktop or Start menu.
-3. Select a country and a station. Enable a desktop widget in **Settings** to keep listening with the main window closed.
+3. Select a country and a station. With **Settings → Background playback** enabled, closing the main window keeps the radio playing in the tray, with or without a widget.
 
 Windows 10/11 x64 and an internet connection are required. No account or separate media player is needed.
 
@@ -46,13 +46,15 @@ Windows 10/11 x64 and an internet connection are required. No account or separat
 
 Open **Settings → Update** to download, verify, and install the latest stable version. Allradione restarts after installation and retains settings, favorites, and recent stations. Downloads are verified with SHA-256.
 
+Starting with version 0.2.5, **Settings → Check for updates → Download and install** opens Windows Setup. Cancelling its welcome page leaves the radio playing. The last screen lets you choose whether to reopen the app. Upgrading **from 0.2.4** still uses its existing updater.
+
 **Moving from an older version?** If an update closes the app without installing, run the [latest Setup](https://github.com/samueltoken/Allradione/releases/latest) once over the existing installation. No uninstall is required.
 
 <details>
 <summary><strong>Installation, widgets &amp; cleanup</strong></summary>
 
 - Setup installs for the current Windows user and creates a Start menu shortcut and a desktop `Allradione.exe` launcher. The launcher continues to work after updates.
-- With a widget enabled, closing the main window keeps playback running. Reopen Allradione from the widget or tray; choose **Quit** in the tray to exit.
+- Widgets can shrink from their original size for a more compact view. Reopen Allradione from the widget or tray; choose **Quit** in the tray to exit.
 - **Settings → Cache** clears app caches while preserving preferences and favorites.
 - Updates replace obsolete application files and remove completed update staging files. Unrelated files are preserved.
 - Windows **Installed apps → Allradione → Uninstall** removes the installed app, its launchers, and application-owned settings and caches.
@@ -95,7 +97,7 @@ Build the Windows installer with Visual Studio C++ Build Tools and the Windows S
 npm run dist:win
 ```
 
-GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.2 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
+GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.4 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
 
 For a release, update the package version and lockfile, add notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow validates the build and publishes the installer with `SHA256SUMS.txt` after all checks pass.
 

@@ -3,6 +3,7 @@
 ; This hook only removes a positively identified Allradione user-data directory.
 ; Custom includes precede electron-builder's standard template includes.
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 !ifdef BUILD_UNINSTALLER
 Function un.AllradioneRemoveTree
@@ -93,10 +94,84 @@ FunctionEnd
 
 !ifndef BUILD_UNINSTALLER
 Var AllradioneHadInstall
+Var AllradioneParentPid
+Var AllradioneConfirmed
+
+; Cancel on the welcome page keeps the listening session alive.
+Function AllradioneWelcomePre
+  StrCmp $AllradioneParentPid "" 0 +2
+    Abort
+FunctionEnd
+
+Function AllradioneWelcomeLeave
+  Push $0
+  Push $1
+  ClearErrors
+  FileOpen $0 "$EXEDIR\setup-confirmed" w
+  IfErrors updateCannotStart
+  FileWrite $0 "1"
+  FileClose $0
+  StrCpy $AllradioneConfirmed "1"
+  StrCpy $1 $AllradioneParentPid
+  System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i r1) p.r0'
+  ${If} $0 P<> 0
+    System::Call 'kernel32::WaitForSingleObject(p r0, i 20000) i.r1'
+    System::Call 'kernel32::CloseHandle(p r0)'
+    ${If} $1 != 0
+      Goto updateCannotStart
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
+  Return
+  updateCannotStart:
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Allradione could not close for the update. Close the app and select Next again."
+    Pop $1
+    Pop $0
+    Abort
+FunctionEnd
+
+!macro customInstallMode
+  ; In-app updates reuse the registered installation directory and scope.
+  ${If} $AllradioneParentPid != ""
+    ${If} $hasPerUserInstallation == "1"
+      StrCpy $isForceCurrentInstall "1"
+    ${ElseIf} $hasPerMachineInstallation == "1"
+      StrCpy $isForceMachineInstall "1"
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro customWelcomePage
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE AllradioneWelcomePre
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE AllradioneWelcomeLeave
+  !insertmacro MUI_PAGE_WELCOME
+!macroend
+
+!macro customHeader
+Function .onGUIEnd
+  ${If} $AllradioneConfirmed == "1"
+  ${AndIf} ${FileExists} "$INSTDIR\Allradione.exe"
+    ; Finish can leave the app closed. Its background cleanup waits for the
+    ; Setup file lock to be released without opening a player window.
+    System::Call 'kernel32::GetCurrentProcessId() i.r0'
+    ${StdUtils.ExecShellAsUser} $1 "$INSTDIR\Allradione.exe" "open" "--cleanup-update=$0"
+  ${EndIf}
+FunctionEnd
+!macroend
 !endif
 
 !macro customInit
   StrCpy $AllradioneHadInstall "0"
+  StrCpy $AllradioneParentPid ""
+  StrCpy $AllradioneConfirmed ""
+  ${If} ${isUpdated}
+  ${AndIfNot} ${Silent}
+  ${AndIf} ${FileExists} "$EXEDIR\allradione-update-stage.json"
+    ${GetParameters} $0
+    ${GetOptions} "$0" "/ALLRADIONEAPP=" $AllradioneParentPid
+    ClearErrors
+  ${EndIf}
   Push $0
   ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
   ${If} $0 != ""

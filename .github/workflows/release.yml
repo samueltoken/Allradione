@@ -28,6 +28,14 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix chat
       - run: node --test chat/test.cjs
+      - name: Verify language switching and two chat clients
+        shell: pwsh
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
+        run: |
+          node --test tests/language-browser.smoke.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node chat/test.ui.cjs
       - run: npm run build:launcher
       - name: Validate release version
         shell: pwsh

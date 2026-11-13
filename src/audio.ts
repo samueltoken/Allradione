@@ -163,7 +163,7 @@ export class RadioPlayer {
       if (typeof source !== 'string' && 'offAir' in source) {
         let message = '현재 방송 시간이 아닙니다.';
         if (source.nextAt) {
-          const time = new Date(source.nextAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+          const time = new Date(source.nextAt).toISOString();
           message = '다음 방송 ' + time;
         }
         this.disposeConnection();

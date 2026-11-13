@@ -2,38 +2,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const syncFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { PassThrough } = require('node:stream');
-const { execFile, spawn } = require('node:child_process');
-const { promisify } = require('node:util');
-const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, makeUpdateScript, makeHelperLaunch, waitForHelperReady, stopHelper, HELPER_READY, readLimited, fetchResponse } = require('../electron/updater.cjs');
+const { createUpdater, parseVersion, isNewer, selectAsset, allowedAssetUrl, allowedRedirect, normalizeDigest, checksumFor, readLimited, fetchResponse } = require('../electron/updater.cjs');
 const tag = 'v0.2.0';
 const name = 'Allradione-Setup-0.2.0-x64.exe';
 const assetUrl = `https://github.com/samueltoken/Allradione/releases/download/${tag}/${name}`;
 const hash = 'c'.repeat(64);
 
-function fakeHelper() {
-  const child = new EventEmitter();
-  child.pid = process.pid; child.exitCode = null; child.signalCode = null; child.killed = false;
-  child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.unref = () => {};
-  child.kill = () => { child.killed = true; child.signalCode = 'SIGTERM'; child.emit('exit', null, 'SIGTERM'); return true; };
-  return child;
-}
-
-function writeFakeAcknowledgement(dataDir, child) {
-  const updates = path.join(dataDir, 'updates');
-  const stage = path.join(updates, syncFs.readdirSync(updates).find(name => name.startsWith('release-')));
-  const script = syncFs.readFileSync(path.join(stage, 'apply-update.ps1'), 'utf8');
-  const token = /^\$readyToken = '([^']+)'/m.exec(script)[1];
-  const sha256 = /^\$expected = '([^']+)'/m.exec(script)[1];
-  syncFs.writeFileSync(path.join(stage, 'helper-ready.json'), JSON.stringify({ token, pid: child.pid, parentPid: process.pid, sha256 }));
-}
-
-async function windowsUpdateHarness(t, { ready = true, onSpawn, helperTimeoutMs = 30000, env = {} } = {}) {
+async function windowsUpdateHarness(t, { launchError, env = {} } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-update-test-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const payload = Buffer.alloc(2048, 0x40); payload.write('MZ');
@@ -45,7 +24,7 @@ async function windowsUpdateHarness(t, { ready = true, onSpawn, helperTimeoutMs 
   const children = [];
   const updater = createUpdater({
     app: { getVersion: () => '0.1.0', isPackaged: true, getPath: () => 'C:\\Programs\\Allradione\\Allradione.exe', quit: () => { calls.quit++; } },
-    shell: { openExternal: async () => { calls.opened++; } }, dataDir, platform: 'win32', env, helperTimeoutMs,
+    shell: { openExternal: async () => { calls.opened++; } }, dataDir, platform: 'win32', env,
     fetchImpl: async url => {
       if (url === 'https://api.github.com/repos/samueltoken/Allradione/releases/latest') {
         calls.checks++;
@@ -55,12 +34,14 @@ async function windowsUpdateHarness(t, { ready = true, onSpawn, helperTimeoutMs 
       calls.downloads++;
       return new Response(payload);
     },
-    scheduleQuit: callback => callback(),
     spawnImpl: (exe, args, options) => {
       assert.equal(calls.quit, 0, 'The application must remain open until helper handoff');
       launches.push({ exe, args, options });
-      const child = fakeHelper(); children.push(child);
-      process.nextTick(() => { child.emit('spawn'); onSpawn?.(child); if (ready) writeFakeAcknowledgement(dataDir, child); });
+      const child = new EventEmitter();
+      child.pid = launchError ? undefined : 4000000;
+      child.unref = () => {};
+      children.push(child);
+      process.nextTick(() => launchError ? child.emit('error', launchError) : child.emit('spawn'));
       return child;
     }
   });
@@ -112,175 +93,6 @@ test('checksum manifests match one exact filename and reject duplicates', () => 
   assert.equal(checksumFor(`${hash}  ${name}\n${hash}  ${name}`, name), null);
 });
 
-test('updater script waits for clean exit and delegates replacement/restart to NSIS', () => {
-  const appExe = "C:\\Users\\O'Brien\\Allradione.exe";
-  const script = makeUpdateScript({ parentPid: 1234, appExe, installer: 'C:\\update\\setup.exe', scriptPath: 'C:\\update\\script.ps1', expectedHash: hash });
-  assert.ok(script.includes("$appExe = 'C:\\Users\\O''Brien\\Allradione.exe'"));
-  assert.ok(script.includes('Wait-Process -Id 1234'));
-  assert.ok(script.includes("-ArgumentList @('/S', '--updated', '--force-run')"));
-  const setupLaunch = script.split('\n').find(line => line.includes('$setup = Start-Process'));
-  assert.match(setupLaunch, /-PassThru -ErrorAction Stop/);
-  assert.doesNotMatch(setupLaunch, /-Wait(?:\s|$)/);
-  assert.ok(script.indexOf('$null = $setup.Handle') < script.indexOf('$setup.WaitForExit()'));
-  assert.ok(script.indexOf('$setup.WaitForExit()') > script.indexOf(setupLaunch));
-  assert.ok(script.indexOf('$setup.WaitForExit()') < script.indexOf('if ($setup.ExitCode -ne 0)'));
-  assert.ok(script.indexOf('SHA256 mismatch') < script.indexOf('$readyRecord ='), 'Readiness follows checksum verification');
-  assert.ok(script.indexOf('$readyRecord =') < script.indexOf('Wait-Process -Id 1234'), 'Readiness precedes waiting for the application to exit');
-  assert.ok(script.includes('if (-not $running)'), 'A failed shell restart has a direct executable fallback');
-  assert.ok(script.includes('-not (Test-ParentRunning)'), 'Preflight failures must not start a duplicate of the still-open app');
-  assert.ok(!script.includes('Move-Item'));
-  assert.ok(!script.includes('Copy-Item'));
-  assert.ok(!script.includes('Remove-Item -LiteralPath $appExe'));
-  assert.ok(!script.includes('--delete-app-data'));
-  assert.ok(!script.includes('-Recurse'));
-  assert.throws(() => makeUpdateScript({ parentPid: '1;evil', expectedHash: hash }));
-});
-
-test('helper readiness requires the complete exact protocol line, not a process spawn', async () => {
-  const child = fakeHelper();
-  let ready = false;
-  const waiting = waitForHelperReady(child, { timeoutMs: 1000 }).then(() => { ready = true; });
-  child.emit('spawn');
-  child.stdout.write('diagnostic line\r\n' + HELPER_READY.slice(0, 12));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(ready, false);
-  child.stdout.write(HELPER_READY.slice(12) + '\r\n');
-  await waiting;
-  assert.equal(ready, true);
-});
-
-test('helper exit before readiness and readiness timeout reject the handoff', async () => {
-  const exited = fakeHelper();
-  const failure = assert.rejects(waitForHelperReady(exited, { timeoutMs: 1000 }), /준비되기 전에 종료/);
-  exited.exitCode = 1; exited.emit('exit', 1, null);
-  await failure;
-  await assert.rejects(waitForHelperReady(fakeHelper(), { timeoutMs: 10 }), /응답하지 않아/);
-});
-
-test('file readiness is independent of console stdout and bound to nonce, parent and installer hash', async t => {
-  const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-ack-test-'));
-  t.after(() => fs.rm(stage, { recursive: true, force: true }));
-  const readyFile = path.join(stage, 'helper-ready.json');
-  const options = { readyFile, readyToken: 'unique-stage-nonce', parentPid: process.pid, expectedHash: hash, timeoutMs: 1000 };
-  const child = fakeHelper();
-  const ready = waitForHelperReady(child, options);
-  await fs.writeFile(readyFile, JSON.stringify({ token: options.readyToken, pid: 1234, parentPid: process.pid, sha256: hash }));
-  assert.equal((await ready).pid, 1234, 'No console output is required');
-  for (const patch of [{ token: 'old-nonce' }, { parentPid: process.pid + 1 }, { sha256: 'd'.repeat(64) }]) {
-    await fs.writeFile(readyFile, JSON.stringify({ token: options.readyToken, pid: 1234, parentPid: process.pid, sha256: hash, ...patch }));
-    await assert.rejects(waitForHelperReady(fakeHelper(), options), /응답을 확인하지 못했어/);
-  }
-});
-
-test('detached launch uses a bounded verified bootstrap and keeps all stage paths out of cmd syntax', () => {
-  const scriptPath = "C:\\Users\\O'Brien & test\\updates\\apply-update.ps1";
-  const launch = makeHelperLaunch({ systemRoot: 'C:\\Windows', scriptPath, scriptHash: hash });
-  assert.equal(launch.executable, 'C:\\Windows\\System32\\cmd.exe');
-  assert.deepEqual(launch.args.slice(0, 3), ['/d', '/s', '/c']);
-  const command = launch.args[3];
-  assert.ok(command.length < 8000);
-  assert.ok(!command.includes(scriptPath));
-  const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)"$/.exec(command)[1];
-  const bootstrap = Buffer.from(encoded, 'base64').toString('utf16le');
-  assert.ok(bootstrap.includes("O''Brien & test"));
-  assert.ok(bootstrap.includes(hash));
-  assert.ok(bootstrap.indexOf('SHA256 mismatch') < bootstrap.indexOf('scriptblock'));
-  assert.ok(!command.includes('ExecutionPolicy'));
-  assert.throws(() => makeHelperLaunch({ systemRoot: 'C:\\Windows&whoami', scriptPath, scriptHash: hash }));
-});
-
-test('cancelling an owned Windows wrapper terminates only its exact process tree', async () => {
-  const child = fakeHelper(); child.pid = process.pid + 1000;
-  const calls = [];
-  await stopHelper(child, { platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, spawnImpl: (exe, args, options) => {
-    calls.push({ exe, args, options });
-    const killer = new EventEmitter(); killer.kill = () => {};
-    process.nextTick(() => { child.exitCode = 1; child.emit('exit', 1); killer.emit('exit', 0); });
-    return killer;
-  } });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].exe, 'C:\\Windows\\System32\\taskkill.exe');
-  assert.deepEqual(calls[0].args, ['/PID', String(child.pid), '/T', '/F']);
-});
-
-test('Windows PowerShell executes the generated encoded helper and safely rejects missing or corrupt installers', { skip: process.platform !== 'win32', timeout: 40000 }, async t => {
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-powershell-test-'));
-  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
-  const stage = path.join(temporary, "O'Brien 한글");
-  await fs.mkdir(stage);
-  const installer = path.join(stage, 'missing-setup.exe');
-  const scriptPath = path.join(stage, 'apply-update.ps1');
-  const sentinel = path.join(stage, 'keep.txt');
-  await fs.writeFile(sentinel, 'keep this unrelated file');
-  const script = makeUpdateScript({ parentPid: process.pid, installer, appExe: path.join(stage, 'nonexistent-app.exe'), scriptPath, expectedHash: hash });
-  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
-  const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const execute = async () => {
-    try {
-      await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
-    } catch (error) {
-      assert.fail(`Generated PowerShell helper failed to execute: ${error.message}\nstdout: ${error.stdout || ''}\nstderr: ${error.stderr || ''}`);
-    }
-  };
-  await execute();
-  const errorLog = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8');
-  assert.match(errorLog, /missing-setup\.exe/, 'The catch branch must record the missing installer, rather than fail to parse');
-  await assert.rejects(fs.access(scriptPath), { code: 'ENOENT' }, 'The generated helper must clean up its own script');
-  assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
-  // A present file exercises .NET streaming SHA256 before the controlled parent wait.
-  await fs.writeFile(installer, 'MZ deliberately incorrect installer bytes');
-  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
-  await execute();
-  assert.match(await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8'), /SHA256 mismatch/);
-  await assert.rejects(fs.access(installer), { code: 'ENOENT' });
-  await assert.rejects(fs.access(scriptPath), { code: 'ENOENT' });
-  assert.equal(await fs.readFile(sentinel, 'utf8'), 'keep this unrelated file');
-});
-
-test('real Windows helper recognizes a running executable through a junction and acknowledges readiness', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
-  const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-helper-ready-'));
-  t.after(() => fs.rm(stage, { recursive: true, force: true }));
-  const junction = path.join(stage, 'executable-alias');
-  await fs.symlink(path.dirname(process.execPath), junction, 'junction');
-  const installer = path.join(stage, 'never-execute-fixture.exe');
-  const scriptPath = path.join(stage, 'apply-update.ps1');
-  const payload = Buffer.alloc(2048, 0x40); payload.write('MZ');
-  await fs.writeFile(installer, payload);
-  const expectedHash = crypto.createHash('sha256').update(payload).digest('hex');
-  const aliasedExe = path.join(junction, path.basename(process.execPath));
-  let script = makeUpdateScript({ parentPid: process.pid, installer, appExe: aliasedExe, scriptPath, expectedHash });
-  // Exercise the production process matcher before its parent wait. The live Node
-  // process reports its genuine path, while appExe deliberately uses a junction.
-  script = script.replace('  $readyRecord =', "  if (-not (Find-AppProcess)) { throw 'Live executable was not recognized through its junction alias' }\n  $readyRecord =");
-  await fs.writeFile(scriptPath, '\ufeff' + script, 'utf8');
-  const launch = makeHelperLaunch({ systemRoot: process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', scriptPath, scriptHash: crypto.createHash('sha256').update(await fs.readFile(scriptPath)).digest('hex') });
-  const helperEnv = { ...process.env };
-  for (const key of Object.keys(helperEnv)) if (['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS', 'ALLRADIONE_DEV_URL', 'PSMODULEPATH'].includes(key.toUpperCase())) delete helperEnv[key];
-  // Match the production detached, hidden helper and clean environment. An
-  // attached PowerShell success does not establish that this launch mode works.
-  const child = spawn(launch.executable, launch.args, { cwd: stage, detached: true, env: helperEnv, windowsHide: true, windowsVerbatimArguments: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '', stderr = '';
-  child.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-8192); });
-  child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
-  try {
-    try { await waitForHelperReady(child, { timeoutMs: 15000, readyFile: path.join(stage, 'helper-ready.json'), readyToken: HELPER_READY, parentPid: process.pid, expectedHash }); }
-    catch (error) {
-      const helperError = await fs.readFile(path.join(stage, 'update-error.txt'), 'utf8').catch(() => '');
-      const stageFiles = await fs.readdir(stage).catch(() => []);
-      const diagnosticScript = `$all=@(Get-CimInstance Win32_Process);$ids=[System.Collections.Generic.HashSet[int]]::new();[void]$ids.Add(${child.pid});do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and $ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);@($all|Where-Object{$ids.Contains([int]$_.ProcessId)}|Select-Object ProcessId,ParentProcessId,Name,ExecutablePath)|ConvertTo-Json -Compress`;
-      const powershell = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-      const tree = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(diagnosticScript, 'utf16le').toString('base64')], { env: helperEnv, timeout: 5000, windowsHide: true }).then(result => result.stdout, failure => failure.message);
-      assert.fail(`Detached helper readiness failed: ${error.message}\nexit=${child.exitCode}\nstdout=${stdout}\nstderr=${stderr}\nhelperError=${helperError}\nstageFiles=${JSON.stringify(stageFiles)}\nscriptRemains=${stageFiles.includes('apply-update.ps1')}\nownedProcesses=${tree}`);
-    }
-    assert.equal(child.exitCode, null, 'The helper must wait after acknowledging readiness');
-    assert.equal(process.kill(process.pid, 0), true, 'The original application process remains alive');
-    assert.deepEqual(await fs.readFile(installer), payload, 'The installer must remain untouched while its parent is alive');
-    await assert.rejects(fs.access(path.join(stage, 'update-error.txt')), { code: 'ENOENT' });
-  } finally {
-    await stopHelper(child);
-  }
-});
-
 test('download follows only trusted redirects and enforces body size', async () => {
   await assert.rejects(fetchResponse(assetUrl, { fetchImpl: async () => new Response('', { status: 302, headers: { location: 'http://127.0.0.1/secrets' } }) }), /GitHub/);
   await assert.rejects(readLimited(new Response('too long'), 3), /크기/);
@@ -313,13 +125,15 @@ test('a release checked before asset upload becomes installable without restarti
   assert.equal(pending.message, '업데이트 파일을 준비 중이야. 잠시 후 다시 확인해줘.');
   release.assets = [asset];
   const result = await updater.installUpdate();
-  assert.equal(result.status, 'installing');
-  assert.deepEqual(calls, { checks: 2, downloads: 1, opened: 0, quit: 1 });
+  assert.equal(result.status, 'opened');
+  assert.deepEqual(calls, { checks: 2, downloads: 1, opened: 0, quit: 0 });
   assert.equal(launches.length, 1);
   const [stage] = await fs.readdir(path.join(dataDir, 'updates'));
-  const script = await fs.readFile(path.join(dataDir, 'updates', stage, 'apply-update.ps1'), 'utf8');
-  assert.ok(script.includes(digest), 'The helper must verify the downloaded installer again');
-  assert.ok(script.includes("@('/S', '--updated', '--force-run')"), 'Verified updates must use silent installation and restart');
+  assert.equal(launches[0].exe, path.join(dataDir, 'updates', stage, name));
+  assert.deepEqual(launches[0].args, ['--updated', '/ALLRADIONEAPP=' + process.pid]);
+  assert.equal(launches[0].options.windowsHide, false);
+  assert.equal(launches[0].options.shell, undefined);
+  assert.deepEqual((await fs.readdir(path.dirname(launches[0].exe))).sort(), [name, 'allradione-update-stage.json'].sort());
   assert.deepEqual(await fs.readFile(path.join(dataDir, 'updates', stage, name)), payload);
 });
 
@@ -352,39 +166,25 @@ test('an uploading asset can be retried and installed after upload completes', a
   assert.equal((await updater.installUpdate()).status, 'retry');
   assert.deepEqual(calls, { checks: 1, downloads: 0, opened: 0, quit: 0 });
   asset.state = 'uploaded';
-  assert.equal((await updater.installUpdate()).status, 'installing');
-  assert.deepEqual(calls, { checks: 2, downloads: 1, opened: 0, quit: 1 });
+  assert.equal((await updater.installUpdate()).status, 'opened');
+  assert.deepEqual(calls, { checks: 2, downloads: 1, opened: 0, quit: 0 });
   assert.equal(launches.length, 1);
 });
 
-test('a helper that exits before readiness leaves the app running and clears its download', async t => {
-  const { updater, calls, dataDir } = await windowsUpdateHarness(t, {
-    ready: false,
-    onSpawn: child => { child.exitCode = 1; child.emit('exit', 1, null); }
-  });
-  const result = await updater.installUpdate();
-  assert.equal(result.status, 'retry');
-  assert.match(result.message, /준비되기 전에 종료/);
+test('a failed Setup launch keeps the app running, cleans its download and permits another attempt', async t => {
+  const { updater, calls, dataDir } = await windowsUpdateHarness(t, { launchError: new Error('Cannot launch Setup') });
+  for (let i = 0; i < 2; i++) assert.equal((await updater.installUpdate()).status, 'retry');
   assert.equal(calls.quit, 0);
+  assert.equal(calls.downloads, 2);
   assert.deepEqual(await fs.readdir(path.join(dataDir, 'updates')), []);
 });
 
-test('a stalled helper is stopped before cleanup and never closes the application', async t => {
-  const { updater, calls, dataDir, children } = await windowsUpdateHarness(t, { ready: false, helperTimeoutMs: 10 });
-  const result = await updater.installUpdate();
-  assert.equal(result.status, 'retry');
-  assert.match(result.message, /응답하지 않아/);
-  assert.equal(calls.quit, 0);
-  assert.equal(children[0].killed, true);
-  assert.deepEqual(await fs.readdir(path.join(dataDir, 'updates')), []);
-});
-
-test('the helper runs outside the app directory and does not inherit runtime override variables', async t => {
+test('Setup runs outside the installation without app runtime overrides', async t => {
   const env = { SystemRoot: 'C:\\Windows', PATH: 'preserved-system-path', PORTABLE_EXECUTABLE_DIR: 'C:\\old', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--inspect', PSModulePath: 'C:\\OtherPowerShell\\Modules', ALLRADIONE_DEV_URL: 'http://localhost:5173' };
   const { updater, launches, dataDir } = await windowsUpdateHarness(t, { env });
-  assert.equal((await updater.installUpdate()).status, 'installing');
+  assert.equal((await updater.installUpdate()).status, 'opened');
   assert.equal(launches[0].options.cwd, dataDir);
-  assert.deepEqual(launches[0].options.stdio, ['ignore', 'pipe', 'pipe']);
+  assert.equal(launches[0].options.stdio, 'ignore');
   assert.deepEqual(launches[0].options.env, { SystemRoot: 'C:\\Windows', PATH: 'preserved-system-path' });
   assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'Sanitization must not mutate the current application environment');
 });
@@ -407,7 +207,7 @@ test('first-time concurrent install calls share the early lock across a delayed 
   const first = updater.installUpdate();
   assert.equal(fetchCount, 1);
   const second = await updater.installUpdate();
-  assert.match(second.message, /다운로드하고/);
+  assert.match(second.message, /진행하고/);
   assert.equal(fetchCount, 1, 'a concurrent initial install must not start another network check');
   releaseCheck();
   await first;
@@ -428,50 +228,26 @@ test('an early check failure releases the install lock for retry', async () => {
   assert.equal(fetchCount, 2);
 });
 
-test('installed Windows downloads a verified setup then exits only after helper readiness', async t => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'allradione-update-test-'));
-  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
-  const payload = Buffer.alloc(2048, 0x40);
-  payload.write('MZ');
-  const digest = crypto.createHash('sha256').update(payload).digest('hex');
-  const release = { tag_name: tag, assets: [{ name, browser_download_url: assetUrl, digest: 'sha256:' + digest }] };
-  let quitCount = 0;
-  const launches = [];
-  const updater = createUpdater({
-    app: { getVersion: () => '0.1.0', isPackaged: true, getPath: () => 'C:\\Users\\listener\\AppData\\Local\\Programs\\Allradione\\Allradione.exe', quit: () => { quitCount++; } },
-    shell: {}, dataDir, platform: 'win32', env: { SystemRoot: 'C:\\Windows' },
-    fetchImpl: async url => new Response(url === assetUrl ? payload : JSON.stringify(release)),
-    scheduleQuit: callback => callback(),
-    spawnImpl: (exe, args, options) => {
-      assert.equal(quitCount, 0);
-      launches.push({ exe, args, options });
-      const child = fakeHelper();
-      process.nextTick(() => {
-        child.emit('spawn');
-        setTimeout(() => { assert.equal(quitCount, 0, 'Spawn alone must never close the app'); writeFakeAcknowledgement(dataDir, child); }, 20);
-      });
-      return child;
-    }
-  });
-  assert.equal((await updater.checkUpdate()).mode, 'installer');
-  const result = await updater.installUpdate();
-  assert.equal(result.status, 'installing');
-  assert.match(result.message, /설치 파일 검증 완료/);
-  assert.equal(quitCount, 1);
-  assert.equal(launches.length, 1);
-  assert.equal(launches[0].exe, 'C:\\Windows\\System32\\cmd.exe');
-  assert.equal(launches[0].options.detached, true);
-  assert.equal(launches[0].options.windowsVerbatimArguments, true);
-  const [stageName] = await fs.readdir(path.join(dataDir, 'updates'));
-  const script = await fs.readFile(path.join(dataDir, 'updates', stageName, 'apply-update.ps1'), 'utf8');
-  assert.ok(script.includes(name));
-  assert.ok(script.includes("@('/S', '--updated', '--force-run')"));
-  assert.ok(!script.includes('Move-Item'));
-  const stageMarker = JSON.parse(await fs.readFile(path.join(dataDir, 'updates', stageName, 'allradione-update-stage.json'), 'utf8'));
-  assert.equal(stageMarker.ownerPid, process.pid, 'The stage is transferred to the spawned helper PID');
-  assert.equal(stageMarker.installerName, name);
+test('cancelling Setup cleans its stage and allows retry without quitting the player', async t => {
+  const { updater, dataDir, calls, launches, children } = await windowsUpdateHarness(t);
   await updater.installUpdate();
-  assert.equal(launches.length, 1, 'the handed-off update remains locked until exit');
+  await updater.installUpdate();
+  assert.equal(launches.length, 1);
+  children[0].emit('exit', 1);
+  for (let attempt = 0; attempt < 100 && (await fs.readdir(path.join(dataDir, 'updates'))).length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(await fs.readdir(path.join(dataDir, 'updates')), []);
+  assert.equal(calls.quit, 0);
+  assert.equal((await updater.installUpdate()).status, 'opened');
+  assert.equal(launches.length, 2);
+});
+
+test('the player exits once after the user confirms the native welcome page', async t => {
+  const { updater, launches, calls } = await windowsUpdateHarness(t);
+  await updater.installUpdate();
+  assert.equal(calls.quit, 0);
+  await fs.writeFile(path.join(path.dirname(launches[0].exe), 'setup-confirmed'), '1');
+  for (let attempt = 0; attempt < 60 && !calls.quit; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(calls.quit, 1);
 });
 
 test('legacy portable mode opens the setup release instead of replacing its launcher', async () => {

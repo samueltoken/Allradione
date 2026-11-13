@@ -1,3 +1,4 @@
+import { region, t } from './i18n';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { feature } from 'topojson-client';
@@ -64,7 +65,7 @@ export class RadioGlobe {
       this.renderer=undefined;
       container.replaceChildren();
       const fallback=document.createElement('div');fallback.className='globe-fallback';
-      const label=document.createElement('p');label.textContent='지구본을 불러올 수 없습니다.';fallback.append(label);container.append(fallback);
+      const label=document.createElement('p');label.textContent=t('지구본을 불러올 수 없습니다.');fallback.append(label);container.append(fallback);
       console.warn('Allradione: WebGL unavailable. Country list remains usable.',error);
       return;
     }
@@ -154,7 +155,7 @@ export class RadioGlobe {
     this.renderer.setClearColor(0x000000,0);
     this.renderer.outputColorSpace=THREE.SRGBColorSpace;
     const canvas=this.renderer.domElement;canvas.tabIndex=0;
-    canvas.setAttribute('role','application');canvas.setAttribute('aria-label','세계 라디오 지구본. 드래그로 회전, 휠로 확대 축소, 국가 클릭. 방향키로 회전하고 Enter로 중앙 국가 선택.');
+    canvas.setAttribute('role','application');canvas.setAttribute('aria-label',t('세계 라디오 지구본. 드래그로 회전, 휠로 확대 축소, 국가 클릭. 방향키로 회전하고 Enter로 중앙 국가 선택.'));
     this.container.append(canvas);
     this.texture=new THREE.CanvasTexture(this.mapCanvas);this.texture.colorSpace=THREE.SRGBColorSpace;
     this.texture.anisotropy=Math.min(4,this.renderer.capabilities.getMaxAnisotropy());
@@ -246,7 +247,7 @@ export class RadioGlobe {
       this.tooltipKey=tooltipKey;this.tooltip.replaceChildren();
       const source=flagUrl(code);
       if(source){const flag=document.createElement('img');flag.className='globe-tooltip-flag';flag.src=source;flag.alt='';flag.width=24;flag.height=18;flag.addEventListener('error',()=>flag.remove(),{once:true});this.tooltip.append(flag);}
-      const name=document.createElement('span');name.className='globe-tooltip-name';name.textContent=info?.name??country.name;this.tooltip.append(name);
+      const name=document.createElement('span');name.className='globe-tooltip-name';name.textContent=code?region(code):country.name;this.tooltip.append(name);
     }
     this.tooltip.classList.add('is-visible');
     if(this.renderer)this.renderer.domElement.style.cursor=code?'pointer':'grab';

@@ -50,11 +50,12 @@ async function readMarker(stageDir) {
   return { marker, markerPath, stat, text };
 }
 
-async function createStageMarker(stageDir, { pid = process.pid, now = Date.now(), installerName } = {}) {
+async function createStageMarker(stageDir, { pid = process.pid, now = Date.now(), installerName, interactive = false } = {}) {
   const directory = stagePath(stageDir);
   if (!validPid(pid) || !Number.isFinite(now) || !INSTALLER_NAME.test(installerName)) throw new TypeError('Invalid update stage metadata');
   await plainDirectoryChain(directory);
   const marker = { schemaVersion: 1, appId: APP_ID, createdAt: new Date(now).toISOString(), ownerPid: pid, installerName };
+  if (interactive) marker.interactive = true;
   await fs.writeFile(path.join(directory, STAGE_MARKER), JSON.stringify(marker), { encoding: 'utf8', flag: 'wx' });
   return marker;
 }
@@ -81,7 +82,7 @@ function isProcessAlive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive = isProcessAlive, minAgeMs = MIN_STAGE_AGE_MS } = {}) {
+async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive = isProcessAlive, minAgeMs = MIN_STAGE_AGE_MS, discardDir } = {}) {
   const summary = { removed: [], retained: [], errors: [] };
   const updates = path.join(path.resolve(dataDir), 'updates');
   const age = Math.max(MIN_STAGE_AGE_MS, Number.isFinite(minAgeMs) ? minAgeMs : MIN_STAGE_AGE_MS);
@@ -93,7 +94,7 @@ async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive
     return summary;
   }
   for (const entry of entries) {
-    if (!STAGE_NAME.test(entry.name)) continue;
+    if (!STAGE_NAME.test(entry.name) || (discardDir && entry.name !== path.basename(discardDir))) continue;
     const directory = path.join(updates, entry.name);
     let removed = false;
     try {
@@ -101,10 +102,12 @@ async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive
       const directoryStat = await plainDirectoryChain(directory);
       const { marker, markerPath, text } = await readMarker(directory);
       const createdAt = Date.parse(marker.createdAt);
-      if (now - createdAt <= age || marker.ownerPid === process.pid || await processAlive(marker.ownerPid)) {
+      const discard = discardDir && marker.ownerPid === process.pid && marker.interactive === true;
+      if (!discard && ((marker.interactive !== true && now - createdAt <= age) || marker.ownerPid === process.pid || await processAlive(marker.ownerPid))) {
         summary.retained.push(entry.name); continue;
       }
       const allowlist = new Set([marker.installerName, 'apply-update.ps1', 'helper-ready.json', 'helper-ready.json.tmp', 'update-error.txt', STAGE_MARKER]);
+      if (marker.interactive === true) allowlist.add('setup-confirmed');
       const files = await fs.readdir(directory, { withFileTypes: true });
       if (files.some(file => !allowlist.has(file.name) || !file.isFile() || file.isSymbolicLink())) {
         summary.retained.push(entry.name); continue;
@@ -140,6 +143,11 @@ async function cleanup(dataDir, { now = Date.now(), isProcessAlive: processAlive
   return summary;
 }
 
+function discardDownload(stageDir) {
+  const directory = stagePath(stageDir);
+  return cleanup(path.dirname(path.dirname(directory)), { discardDir: directory });
+}
+
 function cleanupUpdateStages(dataDir, options) {
   const key = path.resolve(dataDir);
   if (runningCleanups.has(key)) return runningCleanups.get(key);
@@ -148,4 +156,14 @@ function cleanupUpdateStages(dataDir, options) {
   return operation;
 }
 
-module.exports = { STAGE_MARKER, MIN_STAGE_AGE_MS, createStageMarker, setStageOwner, cleanupUpdateStages, isProcessAlive };
+async function cleanupAfterSetup(dataDir, pid) {
+  if (!validPid(pid)) return;
+  // Finish starts us just before Setup exits. A timeout leaves the identified
+  // stage for normal cleanup on the next app launch.
+  for (let attempt = 0; attempt < 120 && isProcessAlive(pid); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  await cleanupUpdateStages(dataDir);
+}
+
+module.exports = { STAGE_MARKER, MIN_STAGE_AGE_MS, createStageMarker, setStageOwner, cleanupUpdateStages, discardDownload, cleanupAfterSetup, isProcessAlive };
