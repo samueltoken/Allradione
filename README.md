@@ -1,86 +1,85 @@
-<p align="center">
-  <img src="assets/icon-256.png" width="96" height="96" alt="Allradione">
-</p>
+<h1 align="center"><img src="docs/images/allradione-cover.webp" width="100%" alt="Allradione — a vermilion globe set into a black tuning dial"></h1>
 
-<h1 align="center">Allradione</h1>
+<p align="center"><strong>Live radio from around the world, tuned by hand on your Windows desktop.</strong></p>
 
 <p align="center">
-  Explore live radio around the world.<br>
-  An analog dial, an interactive globe, and a receiver for your desktop.
+  <a href="https://github.com/samueltoken/Allradione/releases/latest"><strong>Download for Windows ↗</strong></a>
+  &nbsp; · &nbsp; <a href="https://github.com/samueltoken/Allradione/releases">Release notes</a>
+  &nbsp; · &nbsp; <a href="https://github.com/samueltoken/Allradione/issues">Report an issue</a><br>
+  <sub>Windows 10 or 11 · 64-bit · Open source</sub>
 </p>
+
+## Start with a place
+
+Turn the globe to South Korea for MBC FM4U, or head to France for jazz on FIP. If you already know where you want to listen, search for the country by name. Save a station with the heart and it’s there the next time you open the app.
+
+![Allradione’s World Radio screen with a rotatable red globe, a country search and a row of country shortcuts](docs/images/world-radio.webp)
+
+## Turn the dial
+
+Drag the dial, scroll, or use the arrow keys to move between stations. A wide window gives MBC FM4U a sweeping scale and a dot-matrix display. In a smaller window, FIP Jazz sits beneath a round dial. Both displays move with the sound of the broadcast.
 
 <p align="center">
-  <a href="https://github.com/samueltoken/Allradione/releases/latest"><strong>Download for Windows</strong></a>
-  &nbsp; · &nbsp;
-  <a href="https://github.com/samueltoken/Allradione/releases">Release notes</a>
-  &nbsp; · &nbsp;
-  <a href="https://github.com/samueltoken/Allradione/issues">Report an issue</a>
+  <img src="docs/images/mbc-fm4u.webp" width="380" alt="Wide tuner playing MBC FM4U in South Korea, with a dot-matrix audio display">
+  <img src="docs/images/fip-jazz.webp" width="380" alt="Compact round tuner playing Radio France’s FIP Jazz, with a red needle and a waveform">
 </p>
 
-<p align="center"><sub>WINDOWS 10 / 11 &nbsp; · &nbsp; 64-BIT &nbsp; · &nbsp; OPEN SOURCE</sub></p>
-
----
-
-## Radio, at your pace
-
-| Explore | Tune | Keep listening |
-| :--- | :--- | :--- |
-| Rotate the 3D globe or search by country to discover live stations. | Drag the analog dial, scroll, or use the arrow keys to change stations. | Keep a transparent circular or receiver widget on your desktop. |
-
-- **Station operators.** Each country has tabs for confirmed broadcasters, independent stations, unconfirmed operators, and the full list. Station details include the operator, relay and source when available.
-- **Your stations.** Search the directory, save favorites, and return to recent listening.
-- **Global chat.** Open the red speech bubble to chat across countries. Choose a nickname or use the assigned Ano number. While you are in chat, others can see the station you are playing. Click a message to report it.
-- **Sound in motion.** Visualizers respond to the actual audio signal and settle when playback is silent.
-- **A considered interface.** Sora, Pretendard, and IBM Plex Mono pair clear typography with an instrument-inspired layout.
-- **Settings.** Choose Korean, English, Japanese, Simplified Chinese, Cantonese, Taiwanese Mandarin, Taiwanese Hokkien or Latin. Adjust background playback, the sleep timer and motion here.
-
-## Start listening
-
-1. Download `Allradione-Setup-<version>-x64.exe` from the [latest release](https://github.com/samueltoken/Allradione/releases/latest).
-2. Run Setup, then open Allradione from the desktop or Start menu.
-3. Select a country and a station. With **Settings → Background playback** enabled, closing the main window keeps the radio playing in the tray, with or without a widget.
-
-Windows 10/11 x64 and an internet connection are required. No account or separate media player is needed.
-
-## Stay up to date
-
-Open **Settings → Update** to download, verify, and install the latest stable version. Allradione restarts after installation and retains settings, favorites, and recent stations. Downloads are verified with SHA-256.
-
-Starting with version 0.2.5, **Settings → Check for updates → Download and install** opens Windows Setup. Cancelling its welcome page leaves the radio playing. The last screen lets you choose whether to reopen the app. Upgrading **from 0.2.4** still uses its existing updater.
-
-**Moving from an older version?** If an update closes the app without installing, run the [latest Setup](https://github.com/samueltoken/Allradione/releases/latest) once over the existing installation. No uninstall is required.
+Every country has tabs for **Official broadcasters**, **Independent radio**, **Unverified operator**, and **All**. Open the information button beside a station to see who runs it. When a separate operator relays the programme, the details distinguish the two and link to the available evidence.
 
 <details>
-<summary><strong>Installation, widgets &amp; cleanup</strong></summary>
+<summary>See the broadcaster record for MBC FM4U</summary>
 
-- Setup installs for the current Windows user and creates a Start menu shortcut and a desktop `Allradione.exe` launcher. The launcher continues to work after updates.
-- Widgets can shrink from their original size for a more compact view. Reopen Allradione from the widget or tray; choose **Quit** in the tray to exit.
-- **Settings → Cache** clears app caches while preserving preferences and favorites.
-- Updates replace obsolete application files and remove completed update staging files. Unrelated files are preserved.
-- Windows **Installed apps → Allradione → Uninstall** removes the installed app, its launchers, and application-owned settings and caches.
-- To migrate from a portable version, place Setup beside the old `Allradione-data` folder before the first installation. Settings and favorites are imported only when no installed profile exists. The original portable folder and downloaded installers remain separate.
+<img src="docs/images/station-info.webp" width="440" alt="MBC FM4U’s station record names MBC 문화방송 as the operator, shows South Korea and links to the source.">
+
+[How stations are classified](docs/station-classification.md) · [Operator sources](docs/network-operators.md)
+
+</details>
+
+## A radio that fits your desk
+
+Leave OTTAVA playing while you work. The receiver widget puts the station, volume and playback controls within reach. The round widget pares it down to a pulse and a name. Drag either one smaller, or close the main window and keep listening from the Windows tray with **Background playback** enabled.
+
+![Two desktop widgets tuned to Japan’s OTTAVA, a rectangular receiver with a volume needle and a compact circular audio display](docs/images/desktop-widgets.webp)
+
+## What’s on your dial?
+
+Open the red chat button from the globe or any country’s station list. The room is shared across stations. Your nickname, station and its country flag appear together, so someone listening in Japan can discover what a listener in France has on.
+
+<p align="center"><img src="docs/images/listening-room.webp" width="500" alt="Example conversation in the chat panel, with listeners sharing KEXP, FIP and OTTAVA."></p>
+<p align="center"><sub>Illustrative conversation in the Allradione chat window.</sub></p>
+
+## Install & update
+
+1. Download `Allradione-Setup-<version>-x64.exe` from the [latest release](https://github.com/samueltoken/Allradione/releases/latest).
+2. Run Setup, open **Allradione** from the desktop or Start menu, and choose a country and station. All you need to listen is an internet connection.
+3. For later releases, open **Settings → Check for updates → Download and install**. From 0.2.5 onward this opens Windows Setup. You can cancel at the welcome screen and keep listening, or finish the installation and choose whether to reopen the app. Your favorites, recent stations and settings carry over.
+
+In **Settings**, choose 한국어, English, 日本語, 简体中文, 廣東話, 臺灣華語, 臺灣台語 or Latina. You can also set a sleep timer and reduce motion.
+
+<details>
+<summary><strong>Windows installation, migration &amp; cleanup</strong></summary>
+
+- Setup installs for the current Windows user. The desktop launcher continues to work after updates. Choose **Quit** from the tray to exit Allradione.
+- Updates verify the installer with SHA-256, replace obsolete app files, and clean up completed update downloads. **Settings → Cache** clears caches while keeping your preferences and favorites.
+- Version 0.2.4 uses its original updater. If an older update closes the app before Setup finishes, run the latest installer over the existing copy.
+- To import a portable installation, place Setup beside its `Allradione-data` folder before your first installation. Allradione imports the settings and favorites when there is no installed profile and leaves the portable copy in place.
+- **Windows Settings → Apps → Installed apps → Allradione → Uninstall** removes the app, its launchers, and its own settings and caches. Desktop widgets may be covered by exclusive fullscreen games and Windows security screens.
 
 </details>
 
 <details>
-<summary><strong>Station data &amp; privacy</strong></summary>
+<summary><strong>Station directory &amp; privacy</strong></summary>
 
-[Radio Browser](https://www.radio-browser.info/) provides the community-maintained directory. Allradione checks broadcaster records and published stream addresses to identify operators and correct country assignments. Some programmes are carried by independent relays. The Windows player also includes Korean channels with broadcaster-published addresses. Read the [classification criteria](docs/station-classification.md) and [operator sources](docs/network-operators.md).
+[Radio Browser](https://www.radio-browser.info/) supplies the community directory. Allradione checks broadcaster records and published stream addresses to identify operators and correct country assignments. It also includes Korean channels with broadcaster-published addresses. Availability varies by broadcaster, network and region. The player streams audio through a protected local connection on your PC. Starting playback sends the station ID to Radio Browser’s public click counter.
 
-Allradione uses a local, token-protected audio proxy for playback and visualization. It does not relay streams to other listeners.
-
-Listening requires no account. Selecting a station submits its ID to Radio Browser's public click counter.
-
-Opening chat connects to Allradione’s Cloudflare service. The room shares the latest 80 messages from the past day. Other participants see your nickname and messages. Your listening station stays private. A local chat token restores your nickname on reconnect. Use a message’s menu to hide its author or report it.
-
-Station availability depends on the broadcaster, network, and region. Recording, rebroadcasting, and geographic or subscription bypass are not included. Desktop widgets may not appear above exclusive fullscreen games or Windows security screens.
+Listening requires no account. Opening chat connects to Allradione’s Cloudflare service. Other participants can see your nickname, messages and current station while you listen. Folding chat disconnects you. Choose a nickname or keep the assigned Ano number. A local token restores that identity when you return. The room shows up to 80 messages from the last 24 hours. Use a message’s menu to hide its author or report it. Reports keep a copy of the reported message for moderation for up to 30 days.
 
 </details>
 
 <details>
 <summary><strong>Development &amp; builds</strong></summary>
 
-Requires Node.js 22+.
+Use Node.js 22.12 or later.
 
 ```sh
 npm ci
@@ -89,17 +88,9 @@ npm run build
 npm start
 ```
 
-For renderer development, run `npm run dev`, then launch Electron with `ALLRADIONE_DEV_URL=http://localhost:5173`. Native widgets, desktop launchers, and update installation require Electron.
+For renderer development, run `npm run dev` and launch Electron with `ALLRADIONE_DEV_URL=http://localhost:5173`. Electron provides native widgets, desktop launchers and update installation. To build the Windows installer, install the Visual Studio C++ Build Tools and Windows SDK, then run `npm run dist:win`.
 
-Build the Windows installer with Visual Studio C++ Build Tools and the Windows SDK:
-
-```sh
-npm run dist:win
-```
-
-GitHub Actions checks audio, native widgets, installation, automatic updates, preference preservation, and removal. The installer upgrade baseline is the retained, SHA-256-pinned v0.2.5 release. Same-version builds exercise the update flow with a version-comparison fixture; later versions also cover cross-version upgrades.
-
-For a release, update the package version and lockfile, add notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow validates the build and publishes the installer with `SHA256SUMS.txt` after all checks pass.
+GitHub Actions checks audio, widgets, chat, installation, updates, preservation of user settings, and removal. Upgrade checks use the published v0.2.5 installer pinned by its SHA-256 hash. To publish a release, update the package version and lockfile, add release notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow publishes the installer and `SHA256SUMS.txt` after its checks pass.
 
 </details>
 
