@@ -19,4 +19,4 @@ Station names, logos, streams, broadcasts and music belong to their respective o
 
 The app icon was supplied by the project owner and background-extracted for this application. The visual reference screenshots are not distributed with the source.
 
-Full copies of dependency licenses are included in the `licenses/` directory.
+Full license texts are alongside this notice in the source repository and in the `licenses/` directory of the packaged application.

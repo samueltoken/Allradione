@@ -34,7 +34,7 @@ test('Windows chat remembers a login across a fold and a full app restart, and f
   });
   const { createServer } = await import('vite');
   server = await createServer({
-    root, define:{'import.meta.env.VITE_CHAT_URL':JSON.stringify('/room')},
+    root:path.join(root,'src'), define:{'import.meta.env.VITE_CHAT_URL':JSON.stringify('/room')},
     plugins:[{name:'local-room-csp',transformIndexHtml(html) {
       return html.replace('wss://allradione-chat.allradione.workers.dev/room','ws://127.0.0.1:*');
     }}],

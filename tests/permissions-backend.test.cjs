@@ -9,7 +9,7 @@ test('only the configured secure chat room is reachable from the desktop',()=>{
  for(const other of [url.replace('/room','/moderate'),url.replace('wss:','https:'),url+'?elsewhere',url.replace('allradione-chat.','other.')]){
   assert.equal(isAllowedRendererRequest(other,proxy),false);
  }
- const html=require('node:fs').readFileSync(require.resolve('../index.html'),'utf8');
+ const html=require('node:fs').readFileSync(require.resolve('../src/index.html'),'utf8');
  assert.ok(html.includes(url),'production CSP must permit the configured secure chat socket');
 });
 test('only registered bundled main frames receive the narrow loopback permission',()=>{
@@ -25,7 +25,7 @@ test('only registered bundled main frames receive the narrow loopback permission
 test('renderer traffic is restricted to the exact internal token endpoint, not all localhost or LAN',()=>{
  assert.equal(isAllowedRendererRequest(proxy,proxy),true);
  for(const url of ['http://127.0.0.1:31338/stream/secret-token','http://127.0.0.1:31337/admin','http://localhost:31337/stream/secret-token','http://192.168.1.1/admin','http://evil.example/stream/secret-token','https://radio.example/a.mp3','http://127.0.0.1:31337/stream/wrong','http://user@127.0.0.1:31337/stream/secret-token'])assert.equal(isAllowedRendererRequest(url,proxy),false,url);
- assert.equal(isAllowedRendererRequest('http://localhost:5173/src/main.ts',proxy,'http://localhost:5173'),true);
+ assert.equal(isAllowedRendererRequest('http://localhost:5173/main.ts',proxy,'http://localhost:5173'),true);
  assert.equal(isAllowedRendererRequest('ws://localhost:5173/?token=vite',proxy,'http://localhost:5173'),true);
  assert.equal(isAllowedRendererRequest('http://localhost.evil.example:5173/',proxy,'http://localhost:5173'),false);
 });

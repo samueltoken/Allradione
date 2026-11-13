@@ -9,6 +9,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execute = promisify(execFile);
 const ROOT = path.resolve(__dirname, '..');
+const launcherDir = path.join(ROOT, 'windows', 'launcher');
 const OWNER = 'io.github.samueltoken.allradione.desktop-launcher:v1';
 
 function quoted(value) {
@@ -37,13 +38,13 @@ async function main() {
     const binaryPath = path.join(temporary, 'desktop-launcher.exe');
     await fs.writeFile(ownerPath, OWNER, 'ascii');
     const replacements = {
-      '@ICON@': rcPath(path.join(ROOT, 'assets', 'icon.ico')),
-      '@MANIFEST@': rcPath(path.join(ROOT, 'native', 'desktop-launcher', 'launcher.manifest')),
+      '@ICON@': rcPath(path.join(ROOT, 'windows', 'assets', 'icon.ico')),
+      '@MANIFEST@': rcPath(path.join(launcherDir, 'launcher.manifest')),
       '@OWNER@': rcPath(ownerPath),
       '@VERSION_COMMA@': packageJson.version.split('.').concat('0').join(','),
       '@VERSION@': packageJson.version
     };
-    let resource = await fs.readFile(path.join(ROOT, 'native', 'desktop-launcher', 'launcher.rc.in'), 'utf8');
+    let resource = await fs.readFile(path.join(launcherDir, 'launcher.rc.in'), 'utf8');
     for (const [token, value] of Object.entries(replacements)) resource = resource.replaceAll(token, value);
     await fs.writeFile(resourcePath, resource, 'utf8');
     const commands = [
@@ -54,7 +55,7 @@ async function main() {
       'if errorlevel 1 exit /b %errorlevel%',
       `rc.exe /nologo /fo ${quoted(resourceObject)} ${quoted(resourcePath)}`,
       'if errorlevel 1 exit /b %errorlevel%',
-      `cl.exe /nologo /std:c++17 /utf-8 /W4 /WX /O2 /MT /EHsc /DWINVER=0x0A00 /D_WIN32_WINNT=0x0A00 /Fo${quoted(objectPath)} /Fe${quoted(binaryPath)} ${quoted(path.join(ROOT, 'native', 'desktop-launcher', 'launcher.cpp'))} ${quoted(resourceObject)} /link /SUBSYSTEM:WINDOWS /MACHINE:X64 /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:NO user32.lib advapi32.lib shell32.lib ole32.lib uuid.lib version.lib`,
+      `cl.exe /nologo /std:c++17 /utf-8 /W4 /WX /O2 /MT /EHsc /DWINVER=0x0A00 /D_WIN32_WINNT=0x0A00 /Fo${quoted(objectPath)} /Fe${quoted(binaryPath)} ${quoted(path.join(launcherDir, 'launcher.cpp'))} ${quoted(resourceObject)} /link /SUBSYSTEM:WINDOWS /MACHINE:X64 /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:NO user32.lib advapi32.lib shell32.lib ole32.lib uuid.lib version.lib`,
       'exit /b %errorlevel%'
     ].join('\r\n');
     const commandPath = path.join(temporary, 'compile.cmd');
@@ -66,9 +67,10 @@ async function main() {
     if (result.stderr.trim()) process.stderr.write(result.stderr);
     const binary = await fs.readFile(binaryPath);
     if (binary.length < 1024 || binary.length > 8 * 1024 * 1024 || binary.subarray(0, 2).toString('ascii') !== 'MZ' || !binary.includes(Buffer.from(OWNER))) throw new Error('The native launcher build did not produce the expected owned PE executable.');
-    const destination = path.join(ROOT, 'assets', 'desktop-launcher.exe');
+    const destination = path.join(launcherDir, 'build', 'desktop-launcher.exe');
+    await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.copyFile(binaryPath, destination);
-    process.stdout.write(`Built assets/desktop-launcher.exe (${binary.length} bytes, ${packageJson.version}, Windows x64, static CRT)\n`);
+    process.stdout.write(`Built ${path.relative(ROOT, destination)} (${binary.length} bytes, ${packageJson.version}, Windows x64, static CRT)\n`);
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
   }

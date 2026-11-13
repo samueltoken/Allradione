@@ -6,5 +6,4 @@ artifacts/
 .dev.vars*
 *.log
 .env*
-assets/desktop-launcher.exe
-native/desktop-launcher/build/
+windows/launcher/build/

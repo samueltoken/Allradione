@@ -76,6 +76,17 @@ Listening requires no account. Opening chat connects to Allradione’s Cloudflar
 
 </details>
 
+## Source guide
+
+| To work on… | Open |
+| --- | --- |
+| The globe, tuner, widgets and chat interface | [src/](src/) |
+| Desktop playback, station data and updates | [electron/](electron/) |
+| The shared chat service | [chat/](chat/) |
+| The Windows installer, desktop launcher and app icons | [windows/](windows/) |
+| Building and testing the app | [Build and verification scripts](scripts/) · [Tests](tests/) · [GitHub workflows](.github/workflows/) |
+| Station research, release notes and credits | [Station classification](docs/station-classification.md) · [Release notes](docs/releases/) · [Third-party licenses](docs/licenses/) |
+
 <details>
 <summary><strong>Development &amp; builds</strong></summary>
 
@@ -96,5 +107,6 @@ GitHub Actions checks audio, widgets, chat, installation, updates, preservation 
 
 ---
 
-[MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)  
+[MIT License](LICENSE) · [Third-party notices](docs/licenses/THIRD_PARTY_NOTICES.md)
+
 Station logos and broadcast content belong to their respective owners.

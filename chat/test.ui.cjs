@@ -74,7 +74,7 @@ async function run() {
   });
   process.env.VITE_CHAT_URL = 'ws://127.0.0.1:'+worker.port+'/room';
   const {createServer} = await import('vite');
-  const server = await createServer({server:{host:'127.0.0.1',port:0,watch:null,hmr:false}});
+  const server = await createServer({root:path.resolve(__dirname,'../src'),server:{host:'127.0.0.1',port:0,watch:null,hmr:false}});
   let browser;
   try {
     browser = await chromium.launch({channel:process.env.PLAYWRIGHT_CHANNEL, args:['--disable-gpu','--mute-audio']});
@@ -182,11 +182,11 @@ async function run() {
     await expect(second.locator('.chat-compose input')).toBeEnabled();
 
     // Change the language of an open panel. User-provided text stays untouched.
-    await first.evaluate(async()=>{const i18n = await import('/src/i18n.ts'); i18n.setLanguage('en');});
+    await first.evaluate(async()=>{const i18n = await import('/i18n.ts'); i18n.setLanguage('en');});
     await expect(first.locator('.chat-head h2')).toHaveText('Public chat');
     await expect(first.locator('.chat-identity')).toHaveText('Administrator');
     await expect(reply.locator('p')).toHaveText(response);
-    await first.evaluate(async()=>{const i18n = await import('/src/i18n.ts'); i18n.setLanguage('ko');});
+    await first.evaluate(async()=>{const i18n = await import('/i18n.ts'); i18n.setLanguage('ko');});
     await first.locator('[data-chat="logout"]').click(); await expect(first.locator('.chat-admin')).toBeHidden();
     await reply.locator('summary').click();
     await reply.getByRole('button',{name:'사용자 숨기기'}).click();

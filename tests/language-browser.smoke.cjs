@@ -39,7 +39,7 @@ test('all eight settings languages persist, update both widgets and leave statio
   const codes = Object.keys(languages);
   const {createServer} = await import('vite');
   process.env.VITE_CHAT_URL = 'ws://127.0.0.1:8977/room';
-  const server = await createServer({server:{host:'127.0.0.1',port:0,hmr:false,watch:null}});
+  const server = await createServer({root:path.resolve(__dirname,'../src'),server:{host:'127.0.0.1',port:0,hmr:false,watch:null}});
   await server.listen();
   t.after(() => server.close());
   const browser = await chromium.launch({channel:process.env.PLAYWRIGHT_CHANNEL || (process.platform==='win32'?'chrome':undefined),
@@ -94,7 +94,7 @@ test('all eight settings languages persist, update both widgets and leave statio
     for (const widget of [small,medium]) {
       await expect(widget.locator('html')).toHaveAttribute('lang',language);
       await expect(widget.locator('[data-widget-action="show"]')).toHaveAttribute('aria-label',openAppLabels[i]);
-      const prefs = await widget.evaluate(async () => (await (await import('/src/bridge.ts')).bridge.getPreferences()).language);
+      const prefs = await widget.evaluate(async () => (await (await import('/bridge.ts')).bridge.getPreferences()).language);
       assert.equal(prefs,language,'Preview widget preferences track the main window');
       if (i) assert.deepEqual(await koreanLeft(widget,'#app'),[]);
     }

@@ -8,8 +8,8 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "tsc --noEmit && vite build",
+    "dev": "vite src --host 0.0.0.0",
+    "build": "tsc --project src/tsconfig.json && vite build src",
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
     "dist:win": "npm run build && npm run build:launcher && electron-builder --win nsis --x64 --publish never",
@@ -49,19 +49,31 @@
     "files": [
       "dist/**",
       "electron/**",
-      "assets/icon.png",
+      {
+        "from": "windows/assets",
+        "to": "assets",
+        "filter": ["icon.png"]
+      },
       "package.json",
       "LICENSE",
-      "THIRD_PARTY_NOTICES.md",
       "!node_modules/**",
-      "licenses/**"
+      {
+        "from": "docs/licenses",
+        "to": ".",
+        "filter": ["THIRD_PARTY_NOTICES.md"]
+      },
+      {
+        "from": "docs/licenses",
+        "to": "licenses",
+        "filter": ["*.txt"]
+      }
     ],
     "asar": true,
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.ico",
+      "icon": "windows/assets/icon.ico",
       "artifactName": "Allradione-Setup-${version}-${arch}.${ext}",
       "signAndEditExecutable": true
     },
@@ -75,11 +87,11 @@
       "uninstallDisplayName": "Allradione",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
-      "include": "electron/installer.nsh"
+      "include": "windows/installer.nsh"
     },
     "extraResources": [
       {
-        "from": "assets/desktop-launcher.exe",
+        "from": "windows/launcher/build/desktop-launcher.exe",
         "to": "desktop-launcher.exe"
       }
     ]

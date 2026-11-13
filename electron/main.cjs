@@ -19,6 +19,7 @@ const {trayMenu}=require('./tray-menu.cjs');
 const {cleanupUpdateStages,cleanupAfterSetup}=require('./update-staging.cjs');
 const {refreshVersionCodeCache}=require('./version-cache.cjs');
 const ROOT=path.join(__dirname,'..');
+const ICON=path.join(app.isPackaged ? ROOT : path.join(ROOT,'windows'),'assets','icon.png');
 const INDEX=path.join(ROOT,'dist','index.html');
 const DEV=process.env.ALLRADIONE_DEV_URL;
 const ALLOWED_COMMANDS=new Set(['toggle-play','play','pause','next','previous','volume','favorite','show']);
@@ -60,7 +61,7 @@ function load(win,query){
 }
 function createMain(){
  const primary=screen.getPrimaryDisplay().workArea;
- mainWindow=new BrowserWindow({width:Math.min(1440,primary.width),height:Math.min(960,primary.height),minWidth:960,minHeight:640,show:false,frame:false,backgroundColor:'#12100f',title:'Allradione',icon:path.join(ROOT,'assets','icon.png'),webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,webSecurity:true}});
+ mainWindow=new BrowserWindow({width:Math.min(1440,primary.width),height:Math.min(960,primary.height),minWidth:960,minHeight:640,show:false,frame:false,backgroundColor:'#12100f',title:'Allradione',icon:ICON,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,webSecurity:true}});
  mainWindow.removeMenu();configureWindow(mainWindow);
  mainWindow.once('ready-to-show',()=>mainWindow.show());
  mainWindow.on('close',event=>{
@@ -182,7 +183,7 @@ async function start(){
   }
  });
  createMain();
- const icon=nativeImage.createFromPath(path.join(ROOT,'assets','icon.png'));
+ const icon=nativeImage.createFromPath(ICON);
  if(!icon.isEmpty()){
   tray=new Tray(icon.resize({width:24,height:24}));tray.setToolTip('Allradione');
   refreshTray(preferences.get().language);tray.on('click',showMain);tray.on('double-click',showMain);
