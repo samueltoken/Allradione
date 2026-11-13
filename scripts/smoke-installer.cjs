@@ -180,6 +180,7 @@ public static class SetupControls {
 }
 '@
     $setup = Get-Process -Id ${pid}
+    [void]$setup.Handle # Keep the handle available to read the final exit code.
     $visible = $false
     $clicked = 0
     $deadline = [DateTime]::UtcNow.AddMinutes(2)
