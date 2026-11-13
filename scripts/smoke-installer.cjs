@@ -14,9 +14,9 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'artifacts');
 const APP_ID = 'io.github.samueltoken.allradione';
 const MARKER = 'allradione-owner.txt';
-const BASELINE_VERSION = '0.2.5';
+const BASELINE_VERSION = '0.2.6';
 const BASELINE_URL = `https://github.com/samueltoken/Allradione/releases/download/v${BASELINE_VERSION}/Allradione-Setup-${BASELINE_VERSION}-x64.exe`;
-const BASELINE_SHA256 = '60ffd3347830c96c4b3277bd7d1835ab688149d8a0a168085d76010b715d863b';
+const BASELINE_SHA256 = '72a4a6de0b91abf19912a5a578440a6e91af181b1065b5d69b12568a0a9c4c39';
 const canonicalPath = promisify(realpath.native);
 
 function sameWindowsPath(left, right) {

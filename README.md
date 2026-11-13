@@ -90,7 +90,7 @@ npm start
 
 For renderer development, run `npm run dev` and launch Electron with `ALLRADIONE_DEV_URL=http://localhost:5173`. Electron provides native widgets, desktop launchers and update installation. To build the Windows installer, install the Visual Studio C++ Build Tools and Windows SDK, then run `npm run dist:win`.
 
-GitHub Actions checks audio, widgets, chat, installation, updates, preservation of user settings, and removal. Upgrade checks use the published v0.2.5 installer pinned by its SHA-256 hash. To publish a release, update the package version and lockfile, add release notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow publishes the installer and `SHA256SUMS.txt` after its checks pass.
+GitHub Actions checks audio, widgets, chat, installation, updates, preservation of user settings, and removal. Upgrade checks use the published v0.2.6 installer pinned by its SHA-256 hash. To publish a release, update the package version and lockfile, add release notes under `docs/releases/`, and push the matching `v<version>` tag. The release workflow publishes the installer and `SHA256SUMS.txt` after its checks pass.
 
 </details>
 
