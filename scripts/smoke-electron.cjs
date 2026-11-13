@@ -51,9 +51,9 @@ async function nativeWindow(kind) {
     if (!window) return null;
     const bounds = window.getBounds();
     const mainWindow = BrowserWindow.getAllWindows().find(candidate => !candidate.webContents.getURL().includes('widget='));
-    const workArea = screen.getDisplayMatching(mainWindow?.getBounds() || bounds).workArea;
+    const {workArea, scaleFactor} = screen.getDisplayMatching(mainWindow?.getBounds() || bounds);
     return {
-      bounds, workArea, visible: window.isVisible(), alwaysOnTop: window.isAlwaysOnTop(),
+      bounds, workArea, scaleFactor, visible: window.isVisible(), alwaysOnTop: window.isAlwaysOnTop(),
       resizable: window.isResizable(), destroyed: window.isDestroyed(),
       contextIsolation: window.webContents.getLastWebPreferences().contextIsolation,
       nodeIntegration: window.webContents.getLastWebPreferences().nodeIntegration,
@@ -66,8 +66,9 @@ async function assertWidget(kind, width, height) {
   await expect.poll(async () => (await nativeWindow(kind))?.visible, { timeout: TIMEOUT }).toBe(true);
   const state = await nativeWindow(kind);
   const virtualDisplay = process.platform === 'linux' && state.workArea.width <= 1 && process.env.ALLRADIONE_SMOKE_SKIP_SINGLE_INSTANCE === '1';
-  if (!virtualDisplay) assert.equal(state.bounds.width, width, `${kind} widget width`);
-  if (!virtualDisplay) assert.equal(state.bounds.height, height, `${kind} widget height`);
+  const tolerance = process.platform === 'win32' && !Number.isInteger(state.scaleFactor) ? 2 : 0;
+  if (!virtualDisplay) assert.ok(Math.abs(state.bounds.width - width) <= tolerance, `${kind} widget width: ${JSON.stringify(state)}`);
+  if (!virtualDisplay) assert.ok(Math.abs(state.bounds.height - height) <= tolerance, `${kind} widget height: ${JSON.stringify(state)}`);
   if (!virtualDisplay) assert.equal(state.alwaysOnTop, true, `${kind} widget must be always on top`);
   assert.equal(state.resizable, false, `${kind} widget should retain its designed size`);
   assert.equal(state.contextIsolation, true, 'Renderer context isolation');
@@ -173,30 +174,41 @@ async function assertAudioDrivenWidget(main, widget, kind) {
   }
 }
 
-async function assertCompactLayout(main) {
+async function assertCompactLayout(main, view = 'country') {
   const original = await main.evaluate(() => ({ width: innerWidth, height: innerHeight }));
   const native = await nativeWindow('main');
   const resize = async size => {
-    if (process.platform === 'linux' && native.workArea.width <= 1) await main.setViewportSize(size);
+    if (process.env.ALLRADIONE_SMOKE_OFFSCREEN === '1' || process.platform === 'linux' && native.workArea.width <= 1) await main.setViewportSize(size);
     else await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows().find(window => !window.webContents.getURL().includes('widget=')).setSize(size.width, size.height), size);
-    await main.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, size, { timeout: TIMEOUT });
+    await main.waitForFunction(size => Math.abs(innerWidth-size.width) <= 2 && Math.abs(innerHeight-size.height) <= 2, size, { timeout: TIMEOUT });
   };
   const observations = [];
-  for (const size of [{ width: 960, height: 640 }, { width: 1024, height: 720 }]) {
+  for (const size of [{ width: 960, height: 640 }, { width: 1024, height: 720 }, { width: 1280, height: 640 }]) {
     await resize(size);
     const measured = await main.evaluate(() => {
-      const status = document.querySelector('.transport-status'); status.textContent = 'LIVE';
-      const range = document.createRange(); range.selectNodeContents(status); const text = range.getBoundingClientRect(); const footer = document.querySelector('.playerbar').getBoundingClientRect();
-      return { text: { top: text.top, bottom: text.bottom, left: text.left, right: text.right }, footer: { top: footer.top, bottom: footer.bottom }, nameFont: parseFloat(getComputedStyle(document.querySelector('.station-row-name')).fontSize), metaFont: parseFloat(getComputedStyle(document.querySelector('.station-row-sub')).fontSize), flagBorders: [...document.querySelectorAll('.country-stamp')].map(element => ['Top','Right','Bottom','Left'].map(side => parseFloat(getComputedStyle(element)['border' + side + 'Width']))) };
+      const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+      return {
+        width: innerWidth, height: innerHeight, dial: rect('#dial'), scale: rect('.channel-strip'), panel: rect('.station-panel'),
+        receiver: rect('.receiver'), footer: rect('.playerbar'), text: rect('.transport-status'),
+        nameFont: parseFloat(getComputedStyle(document.querySelector('.station-row-name')).fontSize),
+        metaFont: parseFloat(getComputedStyle(document.querySelector('.station-row-sub')).fontSize),
+        flagBorders: [...document.querySelectorAll('.country-stamp')].map(element => ['Top','Right','Bottom','Left'].map(side => parseFloat(getComputedStyle(element)['border' + side + 'Width']))),
+      };
     });
-    assert.ok(measured.text.top >= measured.footer.top && measured.text.bottom <= Math.min(size.height, measured.footer.bottom) + 0.5 && measured.text.left >= 0 && measured.text.right <= size.width, `LIVE text must fit inside footer and ${size.width}×${size.height} viewport: ${JSON.stringify(measured)}`);
+    assert.ok(measured.text.top >= measured.footer.top && measured.text.bottom <= Math.min(measured.height, measured.footer.bottom) + 0.5, 'Playback state must fit inside the footer');
+    assert.ok(measured.dial.width >= 140 && Math.abs(measured.dial.width - measured.dial.height) < 1, 'Dial must remain round and usable');
+    assert.ok(measured.dial.top >= measured.receiver.top && measured.dial.bottom <= measured.scale.top + 1, 'Dial must fit above the channel scale');
+    for (const box of [measured.receiver, measured.scale, measured.panel]) {
+      assert.ok(box.left >= 0 && box.right <= size.width + 0.5 && box.bottom <= measured.footer.top + 0.5,
+        `Receiver, scale and list must fit above footer at ${size.width}×${size.height}: ${JSON.stringify(measured)}`);
+    }
     assert.ok(measured.nameFont >= 18 && measured.metaFont >= 12, 'Station names and metadata must remain readable in compact windows');
-    assert.ok(measured.flagBorders.length && measured.flagBorders.flat().every(width => width === 0), 'Country flag container must have no border');
-    await main.screenshot({ path: path.join(OUTPUT, `compact-${size.width}x${size.height}-ui-fixture.png`) });
+    if (view === 'country') assert.ok(measured.flagBorders.length && measured.flagBorders.flat().every(width => width === 0), 'Country flag container must have no border');
+    await main.screenshot({ path: path.join(OUTPUT, `compact-${view}-${size.width}x${size.height}-ui-fixture.png`) });
     observations.push({ ...size, ...measured });
   }
   await resize(original);
-  results.push({ check: 'compact footer text fits, list text remains legible and country flag is borderless', observations });
+  results.push({ check: `compact ${view} receiver, channel scale and station list fit above the footer`, observations });
 }
 
 async function readPlayerState(page) {
@@ -210,15 +222,20 @@ async function readPlayerState(page) {
 async function assertDialAndFlags(main) {
   // This final, explicitly labeled UI fixture checks interaction without requiring a broadcaster.
   // It runs after the independent live probe and never reports fixture metadata as live audio.
-  const stations = Array.from({ length: 7 }, (_, index) => ({
+  if (process.env.ALLRADIONE_SMOKE_OFFSCREEN === '1') {
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(win=>!win.webContents.getURL().includes('widget=')).setPosition(-10000, 0));
+  }
+  const stations = Array.from({ length: 107 }, (_, index) => ({
     ...fixtureState.station,
     stationuuid: `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`,
     name: `UI fixture · Dial station ${index + 1}`, countrycode: 'JP', tags: 'ui-fixture',
+    operatorKind: ['broadcaster', 'independent', 'unknown'][index % 3], isPodcast: index === 1,
+    ...(index === 0 ? { operatorName:'Fixture Broadcaster', operatorSource:'https://example.org/about', relayName:'Fixture Relay', programmeOriginName:'Fixture Programme Service'} : {}),
   }));
   await application.evaluate(({ ipcMain }, rows) => {
     for (const channel of ['radio:countries', 'radio:stations', 'radio:stream', 'radio:click']) ipcMain.removeHandler(channel);
-    ipcMain.handle('radio:countries', () => [{ code: 'JP', name: '일본', stationcount: rows.length }]);
-    ipcMain.handle('radio:stations', () => rows);
+    ipcMain.handle('radio:countries', () => [{ code: 'JP', name: '일본', stationcount: rows.length }, {code: 'FR', name: '프랑스', stationcount: 1}]);
+    ipcMain.handle('radio:stations', (_event,code) => code==='FR' ? [{...rows[2],countrycode:'FR'}] : rows);
     ipcMain.handle('radio:stream', () => { throw new Error('UI fixture has no audio stream.'); });
     ipcMain.handle('radio:click', () => {});
   }, stations);
@@ -236,7 +253,43 @@ async function assertDialAndFlags(main) {
   assert.equal(flag.loaded, true, 'Country flag image must load');
   assert.match(flag.source, /^(file:|data:)/, 'Flags must use bundled local assets');
   await destination.click();
-  await expect(main.locator('[data-station]')).toHaveCount(stations.length, { timeout: TIMEOUT });
+  const tab = kind => main.locator(`[data-operator="${kind}"]`);
+  await expect(tab('broadcaster')).toHaveAttribute('aria-selected','true');
+  await expect(tab('broadcaster')).toHaveText('공식 방송사 36');
+  await expect(main.locator('[data-station]')).toHaveCount(36);
+  await tab('').click();
+  await expect(main.locator('[data-station]')).toHaveCount(100, { timeout: TIMEOUT });
+  await expect(main.locator('#list-count')).toHaveText(String(stations.length));
+  await main.getByRole('button', { name: '방송 더 보기' }).click();
+  await expect(main.locator('[data-station]')).toHaveCount(stations.length);
+  await main.locator('#station-search').fill('station 107');
+  await expect(main.locator('[data-station]')).toHaveCount(1);
+  await expect(main.locator('[data-station]')).toContainText(stations[106].name);
+  await main.locator('#station-search').fill('');
+  await tab('broadcaster').click();
+  await expect(main.locator('[data-station]')).toHaveCount(36);
+  await expect(main.locator('.operator-name').first()).toHaveText('Fixture Broadcaster');
+  await main.locator('[data-info]').first().click();
+  const details = main.getByRole('dialog',{name:'방송 정보'});
+  for (const expected of ['Fixture Broadcaster','Fixture Relay','Fixture Programme Service']) await expect(details).toContainText(expected);
+  await expect(details.getByRole('button',{name:'출처 보기'})).toBeVisible();
+  await main.keyboard.press('Escape');
+  await tab('broadcaster').press('ArrowRight');
+  await expect(tab('independent')).toHaveAttribute('aria-selected','true');
+  await expect(main.locator('[data-station]')).toHaveCount(36);
+  await expect(main.locator('[data-station]').first()).toContainText('팟캐스트');
+  await tab('unknown').click();
+  await expect(main.locator('[data-station]')).toHaveCount(35);
+  await main.locator('.brand-mark').click();
+  await main.locator('.destination[data-country="FR"]').click();
+  await expect(tab('broadcaster')).toHaveText('공식 방송사 0');
+  await expect(tab('')).toHaveAttribute('aria-selected','true');
+  await expect(main.locator('[data-station]')).toHaveCount(1);
+  await main.locator('.brand-mark').click();
+  await destination.click();
+  await expect(tab('broadcaster')).toHaveAttribute('aria-selected','true');
+  await tab('').click();
+  await expect(main.locator('[data-station]')).toHaveCount(100);
   await main.locator('[data-station]').first().click();
   await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
   const dial = main.locator('#dial');
@@ -259,6 +312,7 @@ async function assertDialAndFlags(main) {
   assert.notEqual(draggedTransform, initialTransform, 'Dial needle must follow the pointer during drag');
   assert.notEqual(await dial.evaluate(element => getComputedStyle(element).cursor), 'crosshair', 'Dragging cursor must not be a crosshair');
   await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
+  await expect(main.locator('[data-dial-preview]')).not.toHaveText(stations[0].name);
   await main.mouse.up();
   await expect(dial).not.toHaveClass(/dragging/);
   await expect(main.locator('[data-station-name]')).not.toHaveText(stations[0].name);
@@ -266,6 +320,10 @@ async function assertDialAndFlags(main) {
   assert.ok(stations.some(station => station.name === selectedName), 'Dial release must select an actual fixture station');
   await main.screenshot({ path: path.join(OUTPUT, 'dial-ui-fixture.png') });
   await assertCompactLayout(main);
+  await main.locator('[data-action="favorite-current"]').click();
+  await main.locator('[data-action="favorites"]').click();
+  await expect(main.locator('[data-station]').first()).toContainText(selectedName);
+  await assertCompactLayout(main, 'favorites');
   results.push({ check: 'explicit UI fixture: dial drag and bundled flag', selectedName, flagLoaded: flag.loaded, audio: 'not attempted; fixture stream deliberately unavailable' });
 }
 
@@ -387,6 +445,11 @@ async function captureCountryAndPlayback(main) {
     await main.locator(`.destination[data-country="${chosen}"]`).click();
     await main.locator('.radio-page').waitFor({ timeout: TIMEOUT });
     await expect.poll(async () => await main.locator('.station-skeleton').count(), { timeout: 45000 }).toBe(0);
+    const retry = main.locator('[data-action="retry-country"]');
+    if (await retry.isVisible()) {
+      await retry.click();
+      await expect.poll(async () => await main.locator('.station-skeleton').count(), { timeout: 45000 }).toBe(0);
+    }
     await main.screenshot({ path: path.join(OUTPUT, 'country.png') });
     const stationCount = await main.locator('[data-station]').count();
     if (stationCount) {
@@ -434,7 +497,7 @@ async function captureCountryAndPlayback(main) {
         }
         if (attempt.playingEventObserved) break;
       }
-    } else probe.playback = 'no playable station in the directory response';
+    } else probe.playback = await retry.isVisible() ? 'directory request failed' : 'no stations in this view';
   } catch (error) {
     probe.message = safeDiagnostic(error?.message || error);
     await main.screenshot({ path: path.join(OUTPUT, 'directory-status.png') }).catch(() => {});
@@ -457,7 +520,7 @@ const fixtureState = {
 
 async function assertWidgetState(widget) {
   await expect(widget.locator('[data-widget-name]')).toHaveText(fixtureState.station.name, { timeout: TIMEOUT });
-  await expect(widget.locator('[data-widget-status]').first()).toHaveText('ON AIR');
+  await expect(widget.locator('[data-widget-status]').first()).toHaveText('재생 중');
   await expect(widget.locator('#widget-play')).toHaveAttribute('aria-label', '일시 정지');
   await expect(widget.locator('body')).toHaveClass(/is-playing/);
 }

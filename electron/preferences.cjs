@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs/promises');
 const path=require('node:path');
-const {cleanStation}=require('./radio.cjs');
+const {savedStations}=require('./station-catalog.mjs');
 const DEFAULTS={volume:.7,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'KR',reducedMotion:false};
 function cleanPreferences(patch,old=DEFAULTS){
   const out={...old};if(!patch||typeof patch!=='object')return out;
@@ -9,7 +9,7 @@ function cleanPreferences(patch,old=DEFAULTS){
   for(const key of ['widgetEnabled','reducedMotion'])if(typeof patch[key]==='boolean')out[key]=patch[key];
   if(['small','medium'].includes(patch.widgetSize))out.widgetSize=patch.widgetSize;
   if(/^[A-Z]{2}$/.test(patch.lastCountry))out.lastCountry=patch.lastCountry;
-  for(const key of ['favorites','recent'])if(Array.isArray(patch[key]))out[key]=patch[key].slice(0,key==='favorites'?1000:100).map(cleanStation).filter(Boolean);
+  for(const key of ['favorites','recent'])if(Array.isArray(patch[key]))out[key]=savedStations(patch[key].slice(0,key==='favorites'?1000:100));
   return out;
 }
 async function createPreferences(dataDir){

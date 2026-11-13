@@ -1,4 +1,5 @@
-export interface Station { stationuuid:string; name:string; url_resolved:string; url:string; homepage:string; favicon:string; countrycode:string; language:string; tags:string; codec:string; bitrate:number; hls:number; lastcheckok:number; votes:number; geo_lat?:number; geo_long?:number; }
+export type OperatorKind = 'broadcaster' | 'independent' | 'unknown';
+export interface Station { stationuuid:string; name:string; url_resolved:string; url:string; homepage:string; favicon:string; countrycode:string; language:string; tags:string; codec:string; bitrate:number; hls:number; lastcheckok:number; lastchecktime_iso8601?:string; votes:number; geo_lat?:number; geo_long?:number; operatorKind?:OperatorKind; operatorName?:string; operatorSource?:string; relayName?:string; programmeOriginName?:string; isPodcast?:boolean; }
 export interface Country { code:string; name:string; stationcount:number; lat?:number; lng?:number; }
 export type WidgetSize = 'small' | 'medium';
 export interface Preferences { volume:number; favorites:Station[]; recent:Station[]; widgetEnabled:boolean; widgetSize:WidgetSize; lastCountry:string; reducedMotion:boolean; }

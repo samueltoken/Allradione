@@ -64,7 +64,7 @@ export class RadioGlobe {
       this.renderer=undefined;
       container.replaceChildren();
       const fallback=document.createElement('div');fallback.className='globe-fallback';
-      const label=document.createElement('p');label.textContent='국가 목록에서 방송을 선택해줘';fallback.append(label);container.append(fallback);
+      const label=document.createElement('p');label.textContent='지구본을 불러올 수 없습니다.';fallback.append(label);container.append(fallback);
       console.warn('Allradione: WebGL unavailable. Country list remains usable.',error);
       return;
     }
@@ -241,13 +241,12 @@ export class RadioGlobe {
     if(this.hovered!==code){this.hovered=code;this.paintMap();}
     if(!country){this.hideTooltip();return;}
     const info=this.available.get(code);
-    const tooltipKey=`${code}:${info?.name??country.name}:${info?.stationcount??''}`;
+    const tooltipKey=`${code}:${info?.name??country.name}`;
     if(this.tooltipKey!==tooltipKey){
       this.tooltipKey=tooltipKey;this.tooltip.replaceChildren();
       const source=flagUrl(code);
       if(source){const flag=document.createElement('img');flag.className='globe-tooltip-flag';flag.src=source;flag.alt='';flag.width=24;flag.height=18;flag.addEventListener('error',()=>flag.remove(),{once:true});this.tooltip.append(flag);}
       const name=document.createElement('span');name.className='globe-tooltip-name';name.textContent=info?.name??country.name;this.tooltip.append(name);
-      const count=document.createElement('span');count.className='globe-tooltip-count';count.textContent=info?`${info.stationcount.toLocaleString()} stations`:'방송 목록에서 확인';this.tooltip.append(count);
     }
     this.tooltip.classList.add('is-visible');
     if(this.renderer)this.renderer.domElement.style.cursor=code?'pointer':'grab';

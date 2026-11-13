@@ -4,6 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 const APP_VERSION = require('../package.json').version;
+const {requestIcy} = require('./icy.cjs');
 
 function isPublicAddress(address) {
   if (net.isIPv4(address)) {
@@ -32,7 +33,7 @@ async function publicLookup(hostname) {
   if (!addresses.length || addresses.some(x=>!isPublicAddress(x.address))) throw new Error('Stream hostname resolves to a private address');
   return addresses.sort((a,b)=>a.family-b.family)[0];
 }
-async function requestPublic(raw, {headers={}, redirects=6, timeout=15000, signal}={}) {
+async function requestPublic(raw, {headers={}, redirects=6, timeout=15000, signal, allowIcy=false}={}) {
   const url=validateUrl(raw), address=await publicLookup(url.hostname);
   return new Promise((resolve,reject)=>{
     const transport=url.protocol==='https:'?https:http;
@@ -41,19 +42,28 @@ async function requestPublic(raw, {headers={}, redirects=6, timeout=15000, signa
       if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
         res.resume();
         if(redirects<=0) return reject(new Error('Too many stream redirects'));
-        requestPublic(new URL(res.headers.location,url).href,{headers,redirects:redirects-1,timeout,signal}).then(resolve,reject);
+        requestPublic(new URL(res.headers.location,url).href,{headers,redirects:redirects-1,timeout,signal,allowIcy}).then(resolve,reject);
       } else resolve({response:res,url:url.href});
     });
     const timer=setTimeout(()=>req.destroy(new Error('Connection timed out')),timeout);
-    req.on('error',e=>{clearTimeout(timer);reject(e);});
+    req.on('error',e=>{
+      clearTimeout(timer);
+      if(allowIcy && !signal?.aborted && e.code==='HPE_INVALID_CONSTANT' &&
+          e.rawPacket?.subarray(0,12).toString('latin1')==='ICY 200 OK\r\n'){
+        requestIcy(url,address,{signal,timeout,userAgent:'Allradione/'+APP_VERSION}).then(resolve,reject);
+      }else reject(e);
+    });
     req.setTimeout(45000,()=>req.destroy(new Error('Stream connection timed out')));
   });
 }
-async function fetchJson(url,{timeout=12000,maxBytes=16*1024*1024,headers={}}={}) {
+async function fetchText(url,{timeout=12000,maxBytes=16*1024*1024,headers={}}={}) {
   const {response}=await requestPublic(url,{timeout,headers});
   if(response.statusCode<200 || response.statusCode>=300){response.resume();throw new Error(`HTTP ${response.statusCode}`);}
   let size=0; const chunks=[];
   for await(const chunk of response){size+=chunk.length;if(size>maxBytes){response.destroy();throw new Error('Response too large');}chunks.push(chunk);}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks).toString('utf8');
 }
-module.exports={isPublicAddress,validateUrl,publicLookup,requestPublic,fetchJson};
+async function fetchJson(url,options) {
+  return JSON.parse(await fetchText(url,options));
+}
+module.exports={isPublicAddress,validateUrl,publicLookup,requestPublic,fetchJson,fetchText};

@@ -11,6 +11,21 @@ function rewritePlaylist(text,base,proxify) {
     return proxify(new URL(trimmed,base).href);
   }).join('\n');
 }
+function stationListTarget(text, base, isPls) {
+  const lines = text.split(/\r?\n/).map(line => line.trim());
+  if (lines.some(line => /^#EXT-X-/i.test(line))) return null;
+  if (isPls || /^\[playlist\]/i.test(lines[0])) {
+    const file = lines.find(line => /^File\d+=.+/i.test(line));
+    if (!file) throw new Error('Empty PLS station list');
+    return validateUrl(new URL(file.slice(file.indexOf('=') + 1), base).href).href;
+  }
+  // HLS media playlists contain timed segments. Traditional radio M3Us
+  // list station URLs with no duration, or the live duration -1.
+  if (lines.some(line => /^#EXTINF:(?!-1(?:[,.]|$))\d/i.test(line))) return null;
+  const entry = lines.find(line => line && !line.startsWith('#'));
+  if (!entry) throw new Error('Empty M3U station list');
+  return validateUrl(new URL(entry, base).href).href;
+}
 async function createStreamProxy({ request = requestPublic } = {}) {
   const token=crypto.randomBytes(32).toString('hex');
   const controllers=new Set();
@@ -32,19 +47,30 @@ async function createStreamProxy({ request = requestPublic } = {}) {
       const target=validateUrl(local.searchParams.get('url')).href;
       const headers={};
       if(req.headers.range && /^bytes=\d*-\d*(,\d*-\d*)*$/.test(req.headers.range)) headers.Range=req.headers.range;
-      const {response:upstream,url:finalUrl}=await request(target,{headers,signal:controller.signal});
+      const {response:upstream,url:finalUrl}=await request(target,{headers,signal:controller.signal,allowIcy:true});
       if(upstream.statusCode<200||upstream.statusCode>=300){upstream.resume();res.writeHead(upstream.statusCode||502);return res.end('Broadcast unavailable');}
       const iterator=upstream[Symbol.asyncIterator]();
       const first=await iterator.next();
       if(first.done){res.writeHead(502);return res.end('Empty broadcast');}
       const contentType=String(upstream.headers['content-type']||'application/octet-stream');
-      const isPlaylist=/mpegurl/i.test(contentType)||/\.m3u8(?:$|\?)/i.test(finalUrl)||first.value.subarray(0,16).toString('utf8').trimStart().startsWith('#EXTM3U');
+      const prefix=first.value.subarray(0,32).toString('utf8').trimStart();
+      const pathname=new URL(finalUrl).pathname;
+      const isPls=/scpls/i.test(contentType)||/\.pls$/i.test(pathname)||/^\[playlist\]/i.test(prefix);
+      const isPlaylist=isPls||/mpegurl/i.test(contentType)||/\.m3u8?$/i.test(pathname)||prefix.startsWith('#EXTM3U');
       if(isPlaylist){
         let bytes=first.value.length;const chunks=[first.value];
         for(let next=await iterator.next();!next.done;next=await iterator.next()){
           bytes+=next.value.length;if(bytes>2*1024*1024){upstream.destroy();throw new Error('Playlist too large');}chunks.push(next.value);
         }
-        const playlist=rewritePlaylist(Buffer.concat(chunks).toString('utf8'),finalUrl,proxify);
+        const body=Buffer.concat(chunks).toString('utf8').trimStart();
+        const entry=stationListTarget(body,finalUrl,isPls);
+        if(entry){
+          const depth=Number(local.searchParams.get('depth')||0);
+          if(!Number.isInteger(depth)||depth<0||depth>=4)throw new Error('Too many nested station lists');
+          res.writeHead(307,{Location:proxify(entry)+'&depth='+(depth+1)});
+          return res.end();
+        }
+        const playlist=rewritePlaylist(body,finalUrl,proxify);
         res.writeHead(200,{'Content-Type':'application/vnd.apple.mpegurl; charset=utf-8'});res.end(playlist);
       } else {
         const forwarded={'Content-Type':contentType};

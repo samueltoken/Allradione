@@ -16,6 +16,8 @@ export class RadioPlayer {
   private generation = 0;
   private attempt = 0;
   private retryCount = 0;
+  private sources: string[] = [];
+  private sourceIndex = 0;
   private active = false;
   private destroyed = false;
   private clickReported = false;
@@ -46,6 +48,8 @@ export class RadioPlayer {
     const generation = ++this.generation;
     this.disposeConnection();
     this.retryCount = 0;
+    this.sources = [...new Set([station.url_resolved, station.url].filter(url => /^https?:\/\//i.test(url)))];
+    this.sourceIndex = 0;
     this.clickReported = false;
     this.snapshot = { station, playing: false, status: 'connecting', volume: this.audio.volume };
     this.emit();
@@ -137,8 +141,11 @@ export class RadioPlayer {
     this.emit();
     this.armDeadline(generation, attempt);
     try {
-      const rawUrl = station.url_resolved || station.url;
-      if (!/^https?:\/\//i.test(rawUrl)) throw new Error('재생 가능한 방송 주소가 없어.');
+      const rawUrl = this.sources[this.sourceIndex];
+      if (!rawUrl) {
+        this.fail(generation, attempt, '재생 주소가 없습니다.', false);
+        return;
+      }
       const proxiedUrl = await this.bridge.streamUrl(rawUrl);
       if (!this.current(generation, attempt)) return;
       const isHls = station.hls === 1 || /\.m3u8(?:[?#]|$)/i.test(rawUrl);
@@ -163,13 +170,13 @@ export class RadioPlayer {
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || !this.current(generation, attempt)) return;
           this.fail(generation, attempt, data.type === Hls.ErrorTypes.MEDIA_ERROR
-            ? '이 방송의 오디오 형식을 재생할 수 없어.'
-            : '방송 연결이 끊겼어. 잠시 후 다시 시도해줘.');
+            ? '지원하지 않는 오디오 형식입니다.'
+            : '방송 연결이 끊겼습니다.');
         });
         hls.attachMedia(this.audio);
       } else {
         if (isHls && !this.audio.canPlayType('application/vnd.apple.mpegurl')) {
-          this.fail(generation, attempt, '이 환경에서는 HLS 방송을 재생할 수 없어.', false);
+          this.fail(generation, attempt, '이 환경에서 재생할 수 없는 방송 형식입니다.', false);
           return;
         }
         this.audio.src = proxiedUrl;
@@ -178,7 +185,7 @@ export class RadioPlayer {
       }
     } catch (error) {
       if (!this.current(generation, attempt)) return;
-      this.fail(generation, attempt, '방송에 연결하지 못했어. 잠시 후 다시 시도해줘.');
+      this.fail(generation, attempt, '방송에 연결할 수 없습니다.');
     }
   }
 
@@ -192,8 +199,8 @@ export class RadioPlayer {
       if (!this.current(generation, attempt)) return;
       const blocked = error instanceof DOMException && error.name === 'NotAllowedError';
       this.fail(generation, attempt, blocked
-        ? '재생 버튼을 눌러 방송을 시작해줘.'
-        : '방송을 재생하지 못했어. 다른 방송을 선택하거나 다시 시도해줘.', !blocked);
+        ? '재생 버튼을 눌러 주세요.'
+        : '방송을 재생할 수 없습니다.', !blocked, !blocked);
     }
   }
 
@@ -222,25 +229,29 @@ export class RadioPlayer {
     if (!this.active || this.destroyed) return;
     const unsupported = this.audio.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED;
     this.fail(this.generation, this.attempt, unsupported
-      ? '방송 주소 또는 오디오 형식을 재생할 수 없어.'
-      : '방송 서버에 연결하지 못했어. 다시 시도해줘.', !unsupported);
+      ? '재생할 수 없는 주소 또는 오디오 형식입니다.'
+      : '방송 서버에 연결할 수 없습니다.', !unsupported);
   };
 
   private readonly onEnded = (): void => {
-    if (this.active && !this.destroyed) this.fail(this.generation, this.attempt, '방송 송출이 중단됐어.');
+    if (this.active && !this.destroyed) this.fail(this.generation, this.attempt, '방송 송출이 중단됐습니다.');
   };
 
-  private fail(generation: number, attempt: number, message: string, retry = true): void {
+  private fail(generation: number, attempt: number, message: string, retry = true, allowAlternate = true): void {
     if (!this.current(generation, attempt)) return;
     this.disposeConnection();
-    if (retry && this.retryCount < 2) {
+    // Directory redirects can expire while the broadcaster's original entry
+    // point still issues fresh media URLs. Keep both within one retry budget.
+    const alternate = allowAlternate && this.sourceIndex + 1 < this.sources.length;
+    if ((retry || alternate) && this.retryCount < 2) {
+      if (alternate) this.sourceIndex += 1;
       this.retryCount += 1;
       this.snapshot = { ...this.snapshot, playing: false, status: 'connecting', spectrum: undefined };
       this.emit();
       this.retryTimer = setTimeout(() => {
         this.retryTimer = null;
         if (this.current(generation)) void this.connect(generation);
-      }, this.retryCount * 1250);
+      }, alternate ? 0 : this.retryCount * 1250);
     } else {
       this.snapshot = { ...this.snapshot, playing: false, status: 'error', error: message, spectrum: undefined };
       this.setMediaPlaybackState('paused');
@@ -256,7 +267,7 @@ export class RadioPlayer {
     this.clearDeadline();
     this.deadline = setTimeout(() => {
       this.deadline = null;
-      if (this.current(generation, attempt)) this.fail(generation, attempt, '방송 응답이 없어. 다른 방송을 선택하거나 다시 시도해줘.');
+      if (this.current(generation, attempt)) this.fail(generation, attempt, '방송 서버가 응답하지 않습니다.');
     }, 18000);
   }
 

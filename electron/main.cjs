@@ -4,6 +4,8 @@ const path=require('node:path');
 const fs=require('node:fs/promises');
 const {pathToFileURL}=require('node:url');
 const {createStreamProxy}=require('./stream-proxy.cjs');
+const {resolveKoreanStream}=require('./korean-stations.mjs');
+const {fetchText}=require('./network.cjs');
 const {createPreferences}=require('./preferences.cjs');
 const {createRadio,cleanStation}=require('./radio.cjs');
 const {createUpdater}=require('./updater.cjs');
@@ -114,7 +116,7 @@ async function start(){
  handle('preferences:save',async(_e,patch)=>{const saved=await preferences.save(patch);broadcastPreferences();return saved;});
  handle('radio:countries',()=>radio.countries());
  handle('radio:stations',(_e,code)=>radio.stations(String(code)));
- handle('radio:stream',(_e,url)=>proxy.url(url));
+ handle('radio:stream',async(_e,url)=>proxy.url(await resolveKoreanStream(url, endpoint=>fetchText(endpoint,{maxBytes:128*1024}))));
  handle('radio:click',(_e,id)=>radio.click(id));
  handle('widget:set',(_e,enabled,size)=>setWidget(Boolean(enabled),size==='medium'?'medium':'small'));
  handle('app:version',()=>app.getVersion());

@@ -4,8 +4,6 @@
 
 <h1 align="center">Allradione</h1>
 
-<p align="center"><strong>One world. Always on air.</strong></p>
-
 <p align="center">
   Explore live radio around the world.<br>
   An analog dial, an interactive globe, and a receiver for your desktop.
@@ -29,6 +27,7 @@
 | :--- | :--- | :--- |
 | Rotate the 3D globe or search by country to discover live stations. | Drag the analog dial, scroll, or use the arrow keys to change stations. | Keep a transparent circular or receiver widget on your desktop. |
 
+- **Station operators.** Each country has tabs for confirmed broadcasters, independent stations, unconfirmed operators, and the full list. Station details include the operator, relay and source when available.
 - **Your stations.** Search the directory, save favorites, and return to recent listening.
 - **Sound in motion.** Visualizers respond to the actual audio signal and settle when playback is silent.
 - **A considered interface.** Sora, Pretendard, and IBM Plex Mono pair clear typography with an instrument-inspired layout.
@@ -63,7 +62,9 @@ Open **Settings → Update** to download, verify, and install the latest stable 
 <details>
 <summary><strong>Station data &amp; privacy</strong></summary>
 
-[Radio Browser](https://www.radio-browser.info/) provides the station directory; audio comes from each broadcaster. Allradione uses a local, token-protected audio proxy for playback and visualization. It does not relay streams to other listeners.
+[Radio Browser](https://www.radio-browser.info/) provides the community-maintained directory. Allradione checks broadcaster records and published stream addresses to identify operators and correct country assignments. Some programmes are carried by independent relays. The Windows player also includes Korean channels with broadcaster-published addresses. Read the [classification criteria](docs/station-classification.md) and [operator sources](docs/network-operators.md).
+
+Allradione uses a local, token-protected audio proxy for playback and visualization. It does not relay streams to other listeners.
 
 No account, telemetry, or application server is required. Selecting a station submits its ID to Radio Browser's public click counter.
 

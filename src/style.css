@@ -267,4 +267,113 @@ html.widget-root{height:100%;width:100%}
 .retro-readout>strong>small>em{font:6px/7px var(--font-mono);font-style:normal;letter-spacing:1px;color:#858d80}
 .retro-arc-caption{position:absolute;bottom:10px;right:0;font:6px/8px var(--font-mono);letter-spacing:1.4px;color:#7c857b}
 .medium-preview i{font:500 17px/19px var(--font-display);padding:6px 7px;letter-spacing:-.8px}
+
+/* The receiver sizes its dial to the space left above the station and channel scale. */
+body:not(.widget-body){min-width:0}
+.radio-page{
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr);
+  height:100%;
+  min-height:360px;
+  padding-block:clamp(12px,2.4vh,26px);
+}
+.radio-page-heading{margin-bottom:clamp(12px,2vh,22px)}
+.radio-layout{
+  width:100%;
+  min-height:0;
+  grid-template-columns:minmax(0,1.04fr) minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+  gap:clamp(16px,2.8vw,42px);
+}
+.receiver{
+  display:grid;
+  grid-template-rows:minmax(0,1fr) auto auto;
+  min-height:0;
+  padding:clamp(10px,1.8vh,20px) clamp(12px,1.8vw,26px);
+}
+.dial-slot{
+  display:grid;
+  place-items:center;
+  container-type:size;
+  min-height:0;
+}
+.dial{width:min(100cqw,100cqh,410px);max-width:none;margin:0}
+.dial-number{font-size:clamp(24px,14cqmin,55px)}
+.dial-mode{font-size:clamp(6px,2.8cqmin,9px)}
+.dial-mode:empty,.dial-number:empty,.codec-pill:empty,.station-identity h2:empty,
+.station-description:empty,.station-overline:not(:has(img)):has(.codec-pill:empty),
+.transport-status:empty,.genre-filters:empty,.now-playing-sub:has([data-footer-meta]:empty){display:none}
+.station-identity h2{margin:clamp(3px,.7vh,10px) auto 3px}
+.station-identity,.channel-strip,.station-panel{min-width:0}
+.receiver-wave,.receiver-wave .waveform{height:clamp(20px,4vh,48px)}
+.receiver-wave{margin:clamp(2px,.8vh,10px) 0}
+.receiver-wave .waveform i{max-height:100%}
+.channel-strip{padding-top:clamp(6px,1.3vh,15px)}
+.station-panel{min-height:0;max-height:none}
+.station-panel-top{margin:0 0 8px;font:500 14px var(--font-ui);letter-spacing:0}
+.station-panel-top #list-count{font:12px var(--font-mono);color:#a7b991;margin-left:4px}
+#operator-filter{
+  max-width:55%;
+  border:1px solid #425438;
+  border-radius:4px;
+  background:#1b2217;
+  color:#d3dfc0;
+  padding:5px 7px;
+  font:13px var(--font-ui);
+}
+.operator-name{color:#cedabb}
+.station-info{width:28px;height:32px;color:#8fa47c}
+.station-title-line{display:flex;align-items:center;justify-content:center;gap:3px;min-width:0}
+.station-title-line h2{margin-left:0;margin-right:0}
+.station-title-line .station-info{height:24px}
+.station-title-line .station-info[hidden]{display:none}
+.station-details h3{font:600 20px/1.4 var(--font-ui);overflow-wrap:anywhere;margin:0 0 16px}
+.station-details dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 18px;margin:0 0 18px;font:14px/1.5 var(--font-ui)}
+.station-details dt{color:#93a67e}
+.station-details dd{margin:0;color:#d6e0cc;overflow-wrap:anywhere}
+.operator-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px;
+  margin:0 0 10px;
+}
+.operator-tabs button{
+  border:1px solid #34432a;
+  border-radius:4px;
+  padding:5px 7px;
+  color:#a2b48c;
+  font:500 12px/1.25 'Pretendard Variable',sans-serif;
+  white-space:nowrap;
+}
+.operator-tabs button[aria-selected="true"]{color:#eef4e2;background:#34452b;border-color:#74865c}
+.operator-tabs button:hover:not(:disabled){border-color:#859870}
+.operator-tabs .operator-count{font-variant-numeric:tabular-nums;opacity:.85}
+@media(max-width:1050px){
+  .operator-tabs{gap:3px;margin-bottom:7px}
+  .operator-tabs button{padding:5px}
+}
+.station-more{display:flex;margin:12px auto}
+.empty-state{min-height:min(215px,100%)}
+.playerbar button:disabled{cursor:default;opacity:.4}
+.explore-copy{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding-top:0}
+.explore h1{font-family:var(--font-ui);margin:0;line-height:1.08;letter-spacing:-.055em}
+.globe-bottom-note,.section-kicker{justify-content:flex-end}
+.modal h2,.country-title h1{font-family:var(--font-ui);letter-spacing:-.04em}
+@media(max-height:740px){
+  .back-link{margin-bottom:7px}
+  .country-title h1{font-size:34px}
+  .station-identity h2{font-size:19px}
+  .receiver-error:not(:empty){padding:0 2px 3px}
+  .genre-filters{padding:8px 0}
+  .playerbar{height:76px}
+}
+@media(max-width:720px){
+  .radio-page{min-height:610px;padding-inline:14px}
+  .radio-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(210px,.9fr) minmax(230px,1fr)}
+  .receiver{grid-template-columns:42% minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto;column-gap:14px}
+  .station-identity{align-self:center}
+  .channel-strip{grid-column:1/-1}
+  .playerbar{grid-template-columns:minmax(0,1fr) auto auto;gap:8px;padding-inline:10px}
+  .player-right .volume{width:50px}
+}
 .medium-preview i small{font:5px var(--font-mono);letter-spacing:.5px;margin-left:4px;color:#a98765}

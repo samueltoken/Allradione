@@ -60,3 +60,26 @@ test('concurrent widget and renderer preference patches persist without losing e
   assert.equal((await createPreferences(dir)).get().volume,.95);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
+
+test('ordinary M3U and PLS playlists lead the player to audio through the same proxy', async () => {
+  const { Readable } = require('node:stream');
+  const files = {
+    '/radio.m3u': ['audio/x-mpegurl', '#EXTM3U\n#EXTINF:-1,Live radio\nlist.pls'],
+    '/list.pls': ['audio/x-scpls', '[playlist]\nFile1=audio.mp3\nNumberOfEntries=1'],
+    '/audio.mp3': ['audio/mpeg', 'audio bytes'],
+    '/loop.pls': ['audio/x-scpls', '[playlist]\nFile1=loop.pls']
+  };
+  const proxy = await createStreamProxy({request: async url => {
+    const [type, body] = files[new URL(url).pathname];
+    const response = Readable.from([Buffer.from(body)]);
+    response.statusCode = 200;
+    response.headers = {'content-type': type};
+    return {response, url};
+  }});
+  try {
+    const audio = await fetch(proxy.url('https://radio.example/radio.m3u'));
+    assert.equal(audio.headers.get('content-type'), 'audio/mpeg');
+    assert.equal(await audio.text(), 'audio bytes');
+    assert.equal((await fetch(proxy.url('https://radio.example/loop.pls'))).status, 502);
+  } finally { proxy.close(); }
+});
