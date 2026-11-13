@@ -293,26 +293,28 @@ async function assertDialAndFlags(main) {
   await main.locator('[data-station]').first().click();
   await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
   const dial = main.locator('#dial');
-  await dial.scrollIntoViewIfNeeded();
   const box = await dial.boundingBox();
   assert.ok(box && box.width > 0 && box.height > 0, 'Dial must be visible');
   const cursorBefore = await dial.evaluate(element => getComputedStyle(element).cursor);
   assert.notEqual(cursorBefore, 'crosshair', 'Dial idle cursor must not be a crosshair');
   const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  const radius = Math.min(box.width, box.height) * 0.38;
-  const initialTransform = await main.locator('#dial-needle').evaluate(element => getComputedStyle(element).transform);
-  await main.mouse.move(center.x, center.y - radius);
+  const wide = await main.locator('.receiver-arc').isVisible();
+  const radius = Math.min(box.width, box.height) * (wide ? .405 : .38);
+  const start = wide ? -Math.PI : -Math.PI / 2;
+  const needle = main.locator(wide ? '.arc-pointer' : '#dial-needle');
+  const initialTransform = await needle.evaluate(element => getComputedStyle(element).transform);
+  await main.mouse.move(center.x + Math.cos(start)*radius, center.y + Math.sin(start)*radius);
   await main.mouse.down();
   await expect(dial).toHaveClass(/dragging/);
   for (let step = 1; step <= 10; step++) {
-    const angle = -Math.PI / 2 + step * Math.PI / 20;
+    const angle = start + step * Math.PI / (wide ? 60 : 20);
     await main.mouse.move(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius);
   }
-  const draggedTransform = await main.locator('#dial-needle').evaluate(element => getComputedStyle(element).transform);
+  const draggedTransform = await needle.evaluate(element => getComputedStyle(element).transform);
   assert.notEqual(draggedTransform, initialTransform, 'Dial needle must follow the pointer during drag');
   assert.notEqual(await dial.evaluate(element => getComputedStyle(element).cursor), 'crosshair', 'Dragging cursor must not be a crosshair');
   await expect(main.locator('[data-station-name]')).toHaveText(stations[0].name);
-  await expect(main.locator('[data-dial-preview]')).not.toHaveText(stations[0].name);
+  await expect(main.locator(wide ? '[data-wide-preview]' : '[data-dial-preview]')).not.toHaveText(stations[0].name);
   await main.mouse.up();
   await expect(dial).not.toHaveClass(/dragging/);
   await expect(main.locator('[data-station-name]')).not.toHaveText(stations[0].name);

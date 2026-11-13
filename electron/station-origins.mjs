@@ -1,4 +1,5 @@
 import { networkOperator } from './network-operators.mjs';
+import { broadcasterPlayer } from './broadcaster-players.mjs';
 import { broadcastRecords, broadcastDomains, broadcastStreams, broadcastProgrammes } from './broadcast-records.mjs';
 
 // Broadcaster-controlled domains. Shared hosting/CDN parent domains do not
@@ -68,7 +69,11 @@ for (const [domain, relayName, operatorSource] of [
 for (const [domain, country, operatorName, operatorSource] of [
   ['somafm.com','US','SomaFM','https://somafm.com/about/'],
   ['radioparadise.com','US','Radio Paradise','https://radioparadise.com/'],
-  ['bigbradio.net','','Big B Radio','https://bigbradio.net/about']
+  ['bigbradio.net','','Big B Radio','https://bigbradio.net/about'],
+  ['radioart.com','','Radio Art · Alexandros Seitaridis','https://www.radioart.com/aboutus'],
+  ['gensokyoradio.net','','Gensokyo Radio','https://gensokyoradio.net/about/'],
+  ['listen.moe','','LISTEN.moe','https://listen.moe/'],
+  ['plaza.one','','Nightwave Plaza','https://plaza.one/']
 ]) owners.set(domain, { country, kind: 'independent', operatorName, operatorSource });
 
 function parseAddress(value) {
@@ -95,7 +100,7 @@ const relays = new Map([
 export function streamOrigin(station) {
   const url = parseAddress(station.url_resolved || station.url);
   if (!url) return {};
-  const network = networkOperator(station);
+  const network = broadcasterPlayer(url) || networkOperator(station);
   if (network) return network;
   const directRecord = broadcastStreams[url.href];
   if (directRecord) return recordEvidence(directRecord);
@@ -132,6 +137,16 @@ export function streamOrigin(station) {
     // The programmes originate in Pyongyang. Japanese volunteers operate the relay.
     const programmeOriginName = { kcbs: '조선중앙방송', vok: '조선의 소리', kctv: '조선중앙TV' }[path.split('/')[1]];
     return { country: 'KP', kind: 'independent', operatorName: 'intchoson', programmeOriginName, operatorSource: 'https://www.intchoson.com/' };
+  }
+  // These off-site addresses are listed with matching programme metadata;
+  // the broadcaster does not publish these relays as its current player.
+  if (station.name === 'NHK-FM' && host === 'mnet.x10.mx' && path === '/nhkfm.m3u8' &&
+      parseAddress(station.homepage)?.hostname === 'www.nhk.or.jp') {
+    return {country:'JP',programmeOriginName:'NHK-FM',operatorSource:'https://www.nhk.or.jp/radio/'};
+  }
+  if (host === 'ottava2.out.airtime.pro' && path === '/ottava2_a' &&
+      parseAddress(station.homepage)?.hostname === 'ottava.jp' && /^ottava$/i.test(station.name)) {
+    return {country:'JP',programmeOriginName:'OTTAVA株式会社',relayName:'Airtime Pro',operatorSource:'https://ottava.jp/company'};
   }
   if (host === 'antares.dribbcast.com' && /^\/proxy\/(kpop|jpop|cpop|apop)(\/|$)/.test(path)) {
     return { kind: 'independent', operatorName: 'Big B Radio', relayName: 'Dribbcast', operatorSource: 'https://bigbradio.net/servers' };

@@ -37,6 +37,12 @@ export function isKoreanBroadcasterStation(station) {
 }
 
 export async function resolveKoreanStream(url, readText) {
+  const chungbuk = /^http:\/\/211\.33\.246\.4:32954\/(radio_(?:stfm|fm))\/myStream\.sdp\/(?:playlist|chunklist_w\d+)\.m3u8$/.exec(url);
+  if (chungbuk) return 'https://mbccbp.coreit.co.kr/' + chungbuk[1] + '/myStream.sdp/playlist.m3u8';
+  if (url === 'http://befm905.live.smilecdn.com:1935/befm905_live/live/playlist.m3u8')
+    return 'https://live.cdn.smilecdn.com/befm905_live/live/playlist.m3u8';
+  if (/^http:\/\/amdlive\.ctnd\.com\.edgesuite\.net\/arirang_3ch\/smil:arirang_3ch\.smil\/(?:playlist|chunklist_b3256000_sleng)\.m3u8$/.test(url))
+    return 'https://amdlive-ch03-ctnd-com.akamaized.net/arirang_3ch/smil:arirang_3ch.smil/playlist.m3u8';
   const channel = byUrl.get(url);
   if (!channel || ['ytn', 'jtv'].includes(channel.network)) return url;
   const body = await readText(url);

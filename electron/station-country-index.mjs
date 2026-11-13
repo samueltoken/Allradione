@@ -1,6 +1,8 @@
 // Directory entries whose source country differs from their published record.
 // Re-fetch by UUID and recheck the stream identity on every lookup.
 export const incomingStations = {
+  "JP": ["8c7afe90-a7de-48de-ab57-2993d94aaee3"],
+  "NL": ["ee1e4d1c-cbcf-11e8-a54a-52543be04c81"],
   "EE": ["0a83de69-837b-4a24-8e59-dbe87dc75c9f"],
   "ZZ": ["238f1b0e-758a-4ee8-bbe2-7fe81bf3c43e"],
   "BE": [
@@ -25,6 +27,16 @@ export const incomingStations = {
     "fbddafaf-8e7c-4cbe-a7fa-ffdcb61b9c22"
   ],
   "DE": [
+    "163ec9a5-0f9c-11ea-a87e-52543be04c81",
+    "0e302535-0f9d-11ea-a87e-52543be04c81",
+    "d2dc2ec6-87a0-11ea-8a3b-52543be04c81",
+    "a1e8c706-87a1-11ea-8a3b-52543be04c81",
+    "92387714-897c-4a88-bdda-c00faa01be61",
+    "e1debfb9-5827-4c7f-90be-2bbc94dcea73",
+    "6849c1a7-2f0a-11e9-8f31-52543be04c81",
+    "931af451-e02f-493d-a693-a1ea9d870419",
+    "b382d9bd-19c3-11ea-a620-52543be04c81",
+    "eb7e879e-19d9-11ea-a620-52543be04c81",
     "001e49ee-c5f6-11e9-8502-52543be04c81",
     "008edbea-c5fb-11e9-8502-52543be04c81",
     "0243c007-e2f1-11e9-a8ba-52543be04c81",
@@ -264,6 +276,28 @@ export const incomingStations = {
     "a7822f87-a3cd-11ea-a483-52543be04c81"
   ],
   "FR": [
+    "17c9e882-7a2c-4eb5-abc0-9ac8eea84d1a",
+    "271de73b-4fa6-4c19-8132-33397f31bf7c",
+    "29253686-6979-43f2-9768-68b1bdf558b4",
+    "3ca73769-408e-4460-abc1-a748d035d313",
+    "3d23fd25-562e-4419-9e0a-727fe0ff4637",
+    "3fbeddf0-40aa-4095-b904-603ced4aef12",
+    "577f14dd-72e7-4523-8d80-978e56ea8453",
+    "57cf528a-02be-4805-a510-6d05bb0ff996",
+    "63a509c4-abbc-4f64-bb8b-7b54a0061a10",
+    "6802b74c-71ba-453b-935f-beb2c03a952c",
+    "684e0b7e-bd37-4176-9d6d-bae63e3fc1ae",
+    "6f6ea925-4bc3-4dbc-8990-7f48c6f24cb9",
+    "82a2903d-b2d7-49c6-93f1-c1d734a9d21a",
+    "a481fed1-b46b-44da-9f9b-cc5c4820189b",
+    "a97e2a53-0d1f-42c5-a0cc-4bb2ecd5e6d1",
+    "b98188e0-3392-485d-8265-c3995c9b1858",
+    "be5b1399-1088-4fa0-b18b-8d98d7abf86c",
+    "cc843b9a-768c-40de-8acd-3139c7750993",
+    "db6ad5ca-db5b-4d1b-ad1c-816ca70b23ca",
+    "dc903fad-9ef2-47ec-bf82-e5273f91c304",
+    "e0445cf4-aa8e-40f8-8d20-18fe0880a40f",
+    "f3de47eb-0fbb-4cbc-bea2-e13acfef225a",
     "0efb01bf-e55e-11e9-a96c-52543be04c81",
     "170e9f59-e70d-11e9-a96c-52543be04c81",
     "2ec55b10-859d-11e9-aa30-52543be04c81",

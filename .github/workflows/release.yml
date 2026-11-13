@@ -26,6 +26,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm ci --prefix chat
+      - run: node --test chat/test.cjs
       - run: npm run build:launcher
       - name: Validate release version
         shell: pwsh

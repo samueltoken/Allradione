@@ -2,6 +2,7 @@ import { koreanStations, isKoreanBroadcasterStation } from './korean-stations.mj
 import { koreanChannelAlias, streamOrigin } from './station-origins.mjs';
 import { incomingStations } from './station-country-index.mjs';
 import { isAvailableStation } from './station-health.mjs';
+import { correctNhkStation } from './nhk-radio.mjs';
 
 const koreanById = new Map(koreanStations.map(row => [row.stationuuid, row]));
 const strings = ['stationuuid','name','url_resolved','url','homepage','favicon','language','tags','codec','lastchecktime_iso8601'];
@@ -37,7 +38,7 @@ export function cleanStation(raw) {
   }
   if (isKoreanBroadcasterStation(station)) station.operatorSource = station.homepage;
   station.isPodcast = /\bpodcasts?\b|팟캐스트|ポッドキャスト|播客|подкаст/iu.test(station.tags + ' ' + station.name);
-  return station;
+  return correctNhkStation(station);
 }
 
 export function savedStations(rows) {

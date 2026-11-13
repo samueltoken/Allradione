@@ -3,6 +3,15 @@ const assert=require('node:assert/strict');
 const {canGrantLoopback,isAllowedRendererRequest,configurePermissions}=require('../electron/permissions.cjs');
 const documentUrl='file:///C:/Allradione/resources/app.asar/dist/index.html';
 const proxy='http://127.0.0.1:31337/stream/secret-token?url=https%3A%2F%2Fradio.example';
+test('only the configured secure chat room is reachable from the desktop',()=>{
+ const {url}=require('../electron/chat-endpoint.json');
+ assert.equal(isAllowedRendererRequest(url,proxy),true);
+ for(const other of [url.replace('/room','/moderate'),url.replace('wss:','https:'),url+'?elsewhere',url.replace('allradione-chat.','other.')]){
+  assert.equal(isAllowedRendererRequest(other,proxy),false);
+ }
+ const html=require('node:fs').readFileSync(require.resolve('../index.html'),'utf8');
+ assert.ok(html.includes(url),'production CSP must permit the configured secure chat socket');
+});
 test('only registered bundled main frames receive the narrow loopback permission',()=>{
  const args={permission:'loopback-network',isMainFrame:true,requestingUrl:documentUrl+'?widget=small',documentUrl,isTrusted:true};
  assert.equal(canGrantLoopback(args),true);

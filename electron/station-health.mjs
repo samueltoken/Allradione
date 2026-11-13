@@ -1,4 +1,4 @@
-import { failedStationAddresses, checkedAt } from './station-health-results.mjs';
+import { failedStationAddresses, deniedStationAddresses, checkedAt } from './station-health-results.mjs';
 
 // Matches a dated observation to the exact address pair that was checked.
 // A directory edit or a newer positive server check restores the station immediately.
@@ -30,6 +30,10 @@ export function isPlaybackAddress(value) {
 
 const reviewTime = Date.parse(checkedAt);
 const reviewExpiry = reviewTime + 7 * 24 * 60 * 60 * 1000;
+export function wasDeniedInAudit(station, now = Date.now()) {
+  const signature = deniedStationAddresses[station.stationuuid];
+  return Boolean(signature && now <= reviewExpiry && signature === addressSignature(station));
+}
 export function isAvailableStation(station, now = Date.now()) {
   if (!station || Number(station.lastcheckok) !== 1 ||
       ![station.url_resolved, station.url].some(isPlaybackAddress)) return false;

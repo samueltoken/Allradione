@@ -1,5 +1,7 @@
 import './style.css';
+import { mountChat } from './chat';
 import { bridge, desktop } from './bridge';
+import { playbackHealthLabel, prioritizePlayable, recordPlaybackHealth } from './playback-health';
 import { flagMarkup } from './flags';
 import type { RadioGlobe } from './globe';
 import type { RadioPlayer } from './audio';
@@ -25,6 +27,7 @@ const paths:Record<string,string>={
  volume:'<path d="m11 5-6 4H2v6h3l6 4V5m4 3a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
  x:'<path d="m6 6 12 12M6 18 18 6"/>',plus:'<path d="M12 5v14M5 12h14"/>',minus:'<path d="M5 12h14"/>',
  reset:'<path d="M3 10a9 9 0 1 1 2 8M3 3v7h7"/>',
+ refresh:'<path d="M21 10a9 9 0 1 0-2 8M21 3v7h-7"/>',
  widget:'<rect x="3" y="4" width="18" height="16" rx="2"/><rect x="12" y="12" width="7" height="6" rx="1"/>',
  expand:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
  radio:'<circle cx="12" cy="12" r="2"/><path d="M7 7a7 7 0 0 0 0 10M17 7a7 7 0 0 1 0 10M4 4a11 11 0 0 0 0 16M20 4a11 11 0 0 1 0 16"/>',
@@ -101,14 +104,15 @@ function isFavorite(id:string){return preferences.favorites.some(s=>s.stationuui
 function collection(){return view==='favorites'?preferences.favorites:view==='recent'?preferences.recent:stations;}
 function filtered() {
  const term = query.trim().toLowerCase();
- return collection().filter(station =>
+ const matches = collection().filter(station =>
    (!operator || kindOf(station) === operator) &&
    (!term || `${station.name} ${station.operatorName || ''} ${station.tags} ${station.language}`.toLowerCase().includes(term)) &&
    (!genre || station.tags.toLowerCase().split(',').some(tag => tag.trim() === genre))
  );
+ return view === 'country' ? prioritizePlayable(matches) : matches;
 }
 function statusLabel() {
- return ({ idle: '', connecting: '연결 중', playing: '재생 중', paused: '일시 정지', error: '연결 실패' } as const)[current.status];
+ return ({ idle: '', connecting: '연결 중', playing: '재생 중', paused: '일시 정지', error: '연결 실패', offair: '방송 시간 외' } as const)[current.status];
 }
 function step(direction:number) {
  const items = view === 'explore' ? preferences.recent : filtered();
@@ -165,12 +169,16 @@ function radioHTML() {
   <div class="radio-layout">
    <section class="receiver" aria-label="라디오 수신기">
     <div class="dial-slot"><div class="dial" id="dial" role="slider" tabindex="0" aria-label="방송 채널 다이얼" aria-valuemin="1" aria-valuemax="1" aria-valuenow="1">
+     ${wideDialScale()}
      <svg viewBox="0 0 440 440" class="dial-scale" aria-hidden="true">${dialTicks()}</svg><div class="dial-rings"></div><div class="dial-needle" id="dial-needle"><span></span></div>
      <div class="dial-center"><span class="dial-mode" data-dial-mode></span><div class="dial-number" data-dial-number></div><div class="dial-live-indicator">${liveDot}${liveMeter}</div><span class="dial-preview-name" data-dial-preview></span></div>
     </div></div>
-    <div class="station-identity"><div class="station-overline"><span class="station-country"><span data-station-flag></span><span data-station-country></span></span><span class="codec-pill" data-codec></span></div>
-     <div class="station-title-line"><h2 data-station-name></h2><button class="icon-button station-info" data-current-info aria-label="현재 방송 정보" title="방송 정보" aria-haspopup="dialog" hidden>${icon('info',16)}</button></div><div class="station-description" data-station-meta></div><div class="receiver-wave">${wave(47)}<span class="wave-center"></span></div><div class="receiver-error" data-play-error role="status"></div>
+    <div class="station-identity">
+     <div class="wide-channel" aria-hidden="true"><span data-wide-number>—</span><small data-wide-count></small></div>
+     <div class="station-overline"><span class="station-country"><span data-station-flag></span><span data-station-country></span></span><span class="codec-pill" data-codec></span></div>
+     <div class="station-title-line"><h2 data-station-name></h2><div class="wide-preview" data-wide-preview aria-hidden="true"></div><button class="icon-button station-info" data-current-info aria-label="현재 방송 정보" title="방송 정보" aria-haspopup="dialog" hidden>${icon('info',16)}</button></div><div class="station-description" data-station-meta></div><div class="receiver-error" data-play-error role="status"></div>
     </div>
+    <div class="receiver-wave">${wave(47,'receiver-levels')}<span class="wave-center"></span></div>
     <div class="channel-strip" aria-label="채널 위치"><span class="channel-label">CH.</span><div class="channel-track">${Array.from({length:35},(_,i)=>`<i class="${i%5===0?'major':''}">${i%5===0?`<span>${String(i+1).padStart(2,'0')}</span>`:''}</i>`).join('')}<b id="channel-pointer"></b></div></div>
    </section>
    <section class="station-panel" aria-label="방송 목록">
@@ -183,6 +191,27 @@ function radioHTML() {
    </section>
   </div></section>`;
 }
+const wideDialStart = -144;
+const wideDialEnd = -36;
+function wideDialScale() {
+ const point = (angle:number, radius:number) => {
+  const radians = angle * Math.PI / 180;
+  return [220 + Math.sin(radians) * radius, 220 - Math.cos(radians) * radius].map(n => n.toFixed(2));
+ };
+ const arc = (r:number) => `M ${point(wideDialStart,r)} A ${r} ${r} 0 0 1 ${point(wideDialEnd,r)}`;
+ const ticks = Array.from({ length:73 }, (_,i) => {
+  const angle = wideDialStart + i / 72 * (wideDialEnd - wideDialStart);
+  const major = i % 9 === 0;
+  const [x1,y1] = point(angle,major ? 150 : 157);
+  const [x2,y2] = point(angle,163);
+  return `<line class="${major ? 'major' : ''}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+ }).join('');
+ return `<svg class="receiver-arc" viewBox="0 0 440 440" aria-hidden="true" focusable="false">
+  <path class="arc-guide" d="${arc(195)}"/><path class="arc-band" d="${arc(178)}"/>
+  <path class="arc-progress" pathLength="1" d="${arc(178)}"/><g class="arc-ticks">${ticks}</g>
+  <g class="arc-pointer"><path d="M220 21v48"/><circle cx="220" cy="21" r="2.2"/></g>
+ </svg>`;
+}
 function dialTicks(){let svg='';for(let i=0;i<65;i++){const angle=(-135+i*270/64)*Math.PI/180;const major=i%8===0;const r1=major?169:178;const r2=188;const x1=220+Math.sin(angle)*r1,y1=220-Math.cos(angle)*r1,x2=220+Math.sin(angle)*r2,y2=220-Math.cos(angle)*r2;svg+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${major?'#d5d1ba':'#5f5d52'}" stroke-width="${major?'2':'1'}"/>`;if(major){const x=220+Math.sin(angle)*148,y=220-Math.cos(angle)*148;svg+=`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle">${String(i/8+1).padStart(2,'0')}</text>`;}}return svg;}
 function playerHTML(){return `<footer class="playerbar"><div class="now-playing"><span class="player-art">${icon('radio',23)}</span><div><span class="now-playing-name" data-footer-name>Allradione</span><span class="now-playing-sub"><span data-footer-flag></span><span data-footer-meta></span></span></div>${btn('heart','현재 방송 즐겨찾기','footer-heart','data-action="favorite-current"')}</div><div class="transport"><div class="transport-buttons">${btn('prev','이전 방송','','data-action="previous"')}<button class="play-button" data-action="toggle" aria-label="재생">${icon('play',23)}</button>${btn('next','다음 방송','','data-action="next"')}</div><span class="transport-status" data-status role="status"></span></div><div class="player-right">${wave(15,'mini-wave')}${icon('volume',18)}<input class="volume" id="volume" type="range" min="0" max="100" value="${Math.round(preferences.volume*100)}" aria-label="볼륨">${btn('widget','위젯 모드',preferences.widgetEnabled?'active':'','data-action="widget"')}</div></footer>`;}
 const stationPageSize = 100;
@@ -190,7 +219,7 @@ function stationRows(items:Station[], start:number) {
  return items.map((s,i) => {
   const kind = kindOf(s);
   const location = view === 'country' ? '' : regionName(s.countrycode);
-  const details = [s.operatorName ? operatorLabels[kind] : '', s.isPodcast ? '팟캐스트' : '', location, s.tags?.split(',').slice(0,2).join(' · ') || s.language].filter(Boolean).join(' · ');
+  const details = [playbackHealthLabel(s), s.operatorName ? operatorLabels[kind] : '', s.isPodcast ? '팟캐스트' : '', location, s.tags?.split(',').slice(0,2).join(' · ') || s.language].filter(Boolean).join(' · ');
   return `<div class="station-row ${s.stationuuid===current.station?.stationuuid?'selected':''}" data-station-row="${esc(s.stationuuid)}">
    <button class="station-select" data-station="${esc(s.stationuuid)}"><span class="station-index">${String(start+i+1).padStart(2,'0')}</span>
     <span class="station-row-main"><span class="station-row-name" title="${esc(s.name)}">${esc(s.name)}</span>
@@ -254,6 +283,7 @@ function bindDial(){
  const clamp=(n:number,min:number,max:number)=>Math.max(min,Math.min(max,n));
  const angleFor=(index:number,count:number)=>count<=1?0:-135+index/(count-1)*270;
  const angleAt=(event:PointerEvent)=>{const rect=dial.getBoundingClientRect();return Math.atan2(event.clientX-rect.left-rect.width/2,-(event.clientY-rect.top-rect.height/2))*180/Math.PI;};
+ const wideMode = () => dial.querySelector('.receiver-arc')!.getClientRects().length > 0;
  const cancel=()=>{clearTimeout(settle);settle=undefined;dialPreviewing=false;dial.classList.remove('dragging','previewing');const preview=dial.querySelector<HTMLElement>('[data-dial-preview]');if(preview)preview.textContent='';};
  const prepare=()=>{
   if(dialPreviewing)return pending.length>0;
@@ -272,6 +302,7 @@ function bindDial(){
   dial.setAttribute('aria-valuenow',String(pendingIndex+1));dial.setAttribute('aria-valuemax',String(pending.length));
   dial.setAttribute('aria-valuetext',pending[pendingIndex]?.name||'');
   const pointer=document.querySelector<HTMLElement>('#channel-pointer');if(pointer)pointer.style.left=`${(rotation+135)/270*100}%`;
+  updateWideDial(dial, (rotation+135)/270, pendingIndex, pending.length, pending[pendingIndex]?.name);
  };
  const commit=()=>{
   const selected=pending[pendingIndex];cancel();
@@ -290,12 +321,16 @@ function bindDial(){
   if(event.pointerId!==pointerId)return;
   const nextAngle=angleAt(event);let delta=nextAngle-pointerAngle;
   if(delta>180)delta-=360;if(delta<-180)delta+=360;
-  pointerAngle=nextAngle;rotation=clamp(rotation+delta,-135,135);
+  pointerAngle=nextAngle;rotation=clamp(rotation+delta*(wideMode()?270/(wideDialEnd-wideDialStart):1),-135,135);
   moved=moved||Math.hypot(event.clientX-downX,event.clientY-downY)>3;paint();
  });
  dial.addEventListener('pointerup',event=>{
   if(event.pointerId!==pointerId)return;
-  if(!moved){rotation=clamp(angleAt(event),-135,135);paint();}
+  if(!moved){
+   const angle=angleAt(event);
+   rotation=clamp(wideMode()?(angle-wideDialStart)/(wideDialEnd-wideDialStart)*270-135:angle,-135,135);
+   paint();
+  }
   const captured=pointerId;pointerId=null;
   if(captured!==null&&dial.hasPointerCapture(captured))dial.releasePointerCapture(captured);
   commit();
@@ -318,6 +353,14 @@ function bindDial(){
   rotation=angleFor(pendingIndex,pending.length);paint();queue();
  });
  cleanDial=()=>{clearTimeout(settle);pointerId=null;dialPreviewing=false;};
+}
+function updateWideDial(dial:HTMLElement, position:number, index:number, total:number, preview='') {
+ const receiver = dial.closest('.receiver')!;
+ dial.style.setProperty('--arc-angle', `${wideDialStart + position*(wideDialEnd-wideDialStart)}deg`);
+ dial.style.setProperty('--arc-offset', String(1-position));
+ receiver.querySelector('[data-wide-number]')!.textContent = index >= 0 ? String(index+1).padStart(2,'0') : '—';
+ receiver.querySelector('[data-wide-count]')!.textContent = index >= 0 ? '/ '+total : '';
+ receiver.querySelector('[data-wide-preview]')!.textContent = preview;
 }
 
 async function selectCountry(code:string){country=code;view='country';query='';genre='';operator='';stations=[];loadState='loading';save({lastCountry:code});const gen=++loadGeneration;render();try{const results=await bridge.stations(code);if(gen!==loadGeneration)return;const seen=new Set<string>();stations=results.filter(s=>s.stationuuid&&!seen.has(s.stationuuid)&&!!seen.add(s.stationuuid));loadState='ready';operator=stations.some(s=>kindOf(s)==='broadcaster')?'broadcaster':'';renderList();}catch(error){if(gen!==loadGeneration)return;loadState='error';loadError=userMessage(error,'방송 목록을 불러올 수 없습니다.');renderList();}}
@@ -393,6 +436,7 @@ function updatePlayerUI() {
   if (needle) needle.style.transform = `rotate(${-135+position*270}deg)`;
   const pointer = document.querySelector<HTMLElement>('#channel-pointer');
   if (pointer) pointer.style.left = position*100+'%';
+  updateWideDial(dial, position, index, items.length);
   dial.setAttribute('aria-valuemax',String(Math.max(1,items.length)));
   dial.setAttribute('aria-valuenow',String(Math.max(1,index+1)));
   dial.setAttribute('aria-valuetext', index >= 0 ? items[index].name : '방송 미선택');
@@ -434,6 +478,7 @@ function paintWave(){
    const sample=data.length?Math.min(1,Math.max(0,data[Math.floor(i/bars.length*data.length)]||0)):0;
    bar.style.setProperty('--bar',`${Math.max(2,sample*42)}px`);
    bar.style.setProperty('--bar-opacity',String(.35+sample*.65));
+   if (waveform.classList.contains('receiver-levels')) bar.style.setProperty('--level', `${sample*100}%`);
   });
  });
  document.querySelectorAll<HTMLElement>('.live-meter i').forEach((bar,i)=>{
@@ -447,6 +492,7 @@ function openStationDetails(station: Station, opener: HTMLButtonElement) {
  const facts = [
   ['국가', countryName(station.countrycode)], ['방송 분류', operatorLabels[kindOf(station)]],
   ['운영자', station.operatorName || '미확인'], ['방송 제작', station.programmeOriginName], ['중계', station.relayName],
+  ['미확인 이유', kindOf(station) === 'unknown' && (station.programmeOriginName ? '방송 제작처는 확인됐지만 이 주소의 송출 운영자는 확인되지 않았습니다.' : station.relayName ? '중계 서비스만 확인됐습니다.' : '등록된 송출 주소와 일치하는 운영 자료를 찾지 못했습니다.') || ''],
  ];
  const source = station.operatorSource;
  const link = source ? `<button class="text-button" id="operator-source">출처 보기 ${icon('external',15)}</button>` : '';
@@ -460,21 +506,47 @@ function modalFrame(title:string,body:string){const root=document.querySelector(
 function closeModal(){document.querySelector('#modal-root')?.replaceChildren();settingsOpen=false;countryDialogOpen=false;document.body.classList.remove('modal-open');if(detailOpener?.isConnected)detailOpener.focus({preventScroll:true});detailOpener=undefined;}
 function openCountries(){countryDialogOpen=true;settingsOpen=false;modalFrame('국가 찾기',`<label class="search-field country-dialog-search">${icon('search',18)}<input id="country-search" type="search" placeholder="국가 이름 또는 코드" autocomplete="off"></label><div class="country-results" id="country-results"></div>`);const search=document.querySelector<HTMLInputElement>('#country-search')!;search.addEventListener('input',()=>renderCountryResults(search.value));search.focus();renderCountryResults('');}
 function renderCountryResults(q:string){const target=document.querySelector('#country-results');if(!target)return;if(countryLoading){target.innerHTML='<p class="loading-label">국가 목록을 불러오는 중…</p>';return;}if(countryLoadError){target.innerHTML=`<div class="empty-state"><p>${esc(countryLoadError)}</p><button class="outline-button" data-action="reload-countries">다시 연결</button></div>`;return;}const selected=countries.filter(c=>`${c.name} ${c.code} ${englishName(c.code)}`.toLowerCase().includes(q.toLowerCase()));target.innerHTML=selected.length?selected.map(c=>`<button class="country-result" data-country="${c.code}"><span class="country-result-code">${flagMarkup(c.code)}<b>${c.code}</b></span><span><strong>${esc(c.name)}</strong><small>${esc(englishName(c.code))}</small></span>${icon('arrow',16)}</button>`).join(''):'<div class="empty-state"><p>검색 결과가 없습니다.</p></div>';}
-async function openSettings(){try{preferences={...preferences,...await bridge.getPreferences()};}catch{}settingsOpen=true;countryDialogOpen=false;modalFrame('설정',`<div class="settings-body"><section class="setting-section"><div class="setting-row"><div><h3>위젯 모드</h3></div><label class="switch"><input id="widget-toggle" type="checkbox" ${preferences.widgetEnabled?'checked':''} aria-label="위젯 모드"><span></span></label></div><div class="widget-size-options"><label class="size-choice"><input type="radio" name="widget-size" value="small" ${preferences.widgetSize==='small'?'checked':''}><span class="widget-preview small-preview"><i></i><i></i><i></i><i></i><b></b></span><strong>작은 원형</strong></label><label class="size-choice"><input type="radio" name="widget-size" value="medium" ${preferences.widgetSize==='medium'?'checked':''}><span class="widget-preview medium-preview"><i>65<small>VOL</small></i><span class="preview-arc"></span><b></b></span><strong>중간 직사각형</strong></label></div></section><section class="setting-section"><div class="setting-row"><div><h3>애니메이션 줄이기</h3></div><label class="switch"><input id="motion-toggle" type="checkbox" ${preferences.reducedMotion?'checked':''} aria-label="애니메이션 줄이기"><span></span></label></div><div class="setting-row"><div><h3>취침 타이머</h3></div><select id="sleep-timer" aria-label="취침 타이머"><option value="0">끄기</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option><option value="90">90분</option></select></div></section><section class="setting-section maintenance-section"><div class="setting-row"><div><h3>캐시</h3><p id="cache-size">확인 중</p></div><button class="outline-button" data-action="cache-clear">${icon('reset',16)} 캐시 정리</button></div><p class="update-message" id="cache-message" role="status"></p><div class="setting-row shortcut-row"><div><h3>바탕화면 실행 파일</h3></div><button class="outline-button" data-action="desktop-shortcut">${icon('plus',16)} 만들기</button></div></section><section class="setting-section update-section"><div class="setting-row"><div><h3>업데이트</h3><p>현재 버전 <span id="current-version">${esc(version)}</span></p></div><button class="outline-button" data-action="check-update">${icon('reset',16)} 업데이트 확인</button></div><p class="update-message" id="update-message" role="status"></p></section><footer class="settings-footer"><span>Allradione <b>© 2026</b></span><button class="text-button" data-action="github">OPEN SOURCE ${icon('external',14)}</button></footer></div>`);void refreshCacheSize();}
+async function openSettings(){try{preferences={...preferences,...await bridge.getPreferences()};}catch{}settingsOpen=true;countryDialogOpen=false;modalFrame('설정',`<div class="settings-body"><section class="setting-section"><div class="setting-row"><div><h3>위젯 모드</h3></div><label class="switch"><input id="widget-toggle" type="checkbox" ${preferences.widgetEnabled?'checked':''} aria-label="위젯 모드"><span></span></label></div><div class="widget-size-options"><label class="size-choice"><input type="radio" name="widget-size" value="small" ${preferences.widgetSize==='small'?'checked':''}><span class="widget-preview small-preview"><i></i><i></i><i></i><i></i><b></b></span><strong>작은 원형</strong></label><label class="size-choice"><input type="radio" name="widget-size" value="medium" ${preferences.widgetSize==='medium'?'checked':''}><span class="widget-preview medium-preview"><i>65<small>VOL</small></i><span class="preview-arc"></span><b></b></span><strong>중간 직사각형</strong></label></div></section><section class="setting-section"><div class="setting-row"><div><h3>애니메이션 줄이기</h3></div><label class="switch"><input id="motion-toggle" type="checkbox" ${preferences.reducedMotion?'checked':''} aria-label="애니메이션 줄이기"><span></span></label></div><div class="setting-row"><div><h3>취침 타이머</h3></div><select id="sleep-timer" aria-label="취침 타이머"><option value="0">끄기</option><option value="15">15분</option><option value="30">30분</option><option value="60">60분</option><option value="90">90분</option></select></div></section><section class="setting-section maintenance-section"><div class="setting-row"><div><h3>캐시</h3><p id="cache-size">확인 중</p></div><button class="outline-button" data-action="cache-clear">${icon('reset',16)} 캐시 정리</button></div><p class="update-message" id="cache-message" role="status"></p><div class="setting-row shortcut-row"><div><h3>바탕화면 실행 파일</h3></div><button class="outline-button" data-action="desktop-shortcut">${icon('plus',16)} 만들기</button></div></section><section class="setting-section update-section"><div class="setting-row"><div><h3>업데이트</h3><p>현재 버전 <span id="current-version">${esc(version)}</span></p></div><button class="outline-button" data-action="check-update">${icon('refresh',16)} 업데이트 확인</button></div><p class="update-message" id="update-message" role="status"></p></section><footer class="settings-footer"><span>Allradione <b>© 2026</b></span><button class="text-button" data-action="github">OPEN SOURCE ${icon('external',14)}</button></footer></div>`);void refreshCacheSize();}
 async function changeWidget(enabled:boolean,size:WidgetSize){try{await bridge.setWidget(enabled,size);await save({widgetEnabled:enabled,widgetSize:size});player?.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.querySelectorAll('[data-action="widget"]').forEach(el=>el.classList.toggle('active',enabled));if(settingsOpen){const toggle=document.querySelector<HTMLInputElement>('#widget-toggle');if(toggle)toggle.checked=enabled;}}catch(error){const toggle=document.querySelector<HTMLInputElement>('#widget-toggle');if(toggle)toggle.checked=preferences.widgetEnabled;toast(userMessage(error,'위젯을 열지 못했어. 다시 시도해줘.'));}}
-async function checkUpdate(button:HTMLButtonElement){button.disabled=true;button.innerHTML=icon('reset',16)+' 확인 중';const message=document.querySelector<HTMLElement>('#update-message')!;try{const info=await bridge.checkUpdate();updateMode=info.mode;message.textContent=info.available?`v${info.version} 업데이트가 있어.`:userMessage(info.message,'업데이트를 확인하지 못했어. 잠시 후 다시 시도해줘.');button.dataset.action=info.available?'install-update':'check-update';button.innerHTML=icon(info.available?'arrow':'check',16)+(info.available?(updateMode==='installer'?'다운로드 및 설치':'업데이트하기'):'다시 확인');}catch(error){message.textContent=userMessage(error,'업데이트를 확인하지 못했어. 인터넷 연결을 확인해줘.');button.innerHTML=icon('reset',16)+' 다시 확인';}finally{button.disabled=false;}}
+async function checkUpdate(button:HTMLButtonElement) {
+ button.disabled = true;
+ button.setAttribute('aria-busy','true');
+ const message = document.querySelector<HTMLElement>('#update-message')!;
+ message.textContent = '확인 중…';
+ const reducedMotion = preferences.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches;
+ const turn = reducedMotion ? undefined : button.querySelector('svg')?.animate(
+  [{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}],
+  {duration:620, easing:'cubic-bezier(.4,0,.2,1)'}
+ );
+ const finished = turn?.finished.catch(() => {});
+ let available = false;
+ try {
+  const info = await bridge.checkUpdate();
+  available = info.available;
+  updateMode = info.mode;
+  message.textContent = available ? 'v'+info.version+' 업데이트가 있어.' : userMessage(info.message,'업데이트를 확인하지 못했어. 잠시 후 다시 시도해줘.');
+ } catch (error) {
+  message.textContent = userMessage(error,'업데이트를 확인하지 못했어. 인터넷 연결을 확인해줘.');
+ } finally {
+  await finished;
+  button.dataset.action = available ? 'install-update' : 'check-update';
+  button.innerHTML = available ? icon('arrow',16)+(updateMode==='installer'?'다운로드 및 설치':'업데이트하기') : icon('refresh',16)+' 업데이트 확인';
+  button.removeAttribute('aria-busy');
+  button.disabled = false;
+ }
+}
 async function installUpdate(button:HTMLButtonElement){
- button.disabled=true;button.innerHTML=icon('reset',16)+(updateMode==='installer'?'설치 파일 다운로드 중':'다운로드 중');
+ button.disabled=true;button.innerHTML=icon('refresh',16)+(updateMode==='installer'?'설치 파일 다운로드 중':'다운로드 중');
  let restarting=false;
  const showMessage=(message:string)=>{const target=document.querySelector('#update-message');if(target)target.textContent=message;};
  try{
   const result=await bridge.installUpdate();
   showMessage(userMessage(result.message,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.'));
   restarting=result.status==='installing';
-  if(restarting)button.innerHTML=icon('reset',16)+' 설치 및 재시작 중';
-  else if(result.status==='retry')button.innerHTML=icon('reset',16)+' 다시 시도';
-  else{button.dataset.action='check-update';button.innerHTML=icon('reset',16)+' 다시 확인';}
- }catch(error){showMessage(userMessage(error,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.'));button.innerHTML=icon('reset',16)+' 다시 시도';}
+  if(restarting)button.innerHTML=icon('refresh',16)+' 설치 및 재시작 중';
+  else if(result.status==='retry')button.innerHTML=icon('refresh',16)+' 다시 시도';
+  else{button.dataset.action='check-update';button.innerHTML=icon('refresh',16)+' 다시 확인';}
+ }catch(error){showMessage(userMessage(error,'업데이트를 적용하지 못했어. 잠시 후 다시 시도해줘.'));button.innerHTML=icon('refresh',16)+' 다시 시도';}
  finally{button.disabled=restarting;}
 }
 
@@ -625,5 +697,6 @@ function updateWidget(){
 }
 
 
-async function start(){if(isWidget){renderWidget();return;}try{preferences={...preferences,...await bridge.getPreferences()};version=await bridge.version();}catch{toast('설정을 불러오지 못해 기본값으로 시작했어.');}document.body.classList.toggle('reduced-motion',preferences.reducedMotion);const {RadioPlayer}=await import('./audio');player=new RadioPlayer(bridge,state=>{current=state;if(state.status==='playing'&&state.station&&state.station.stationuuid!==lastRecent){lastRecent=state.station.stationuuid;void save({recent:[state.station,...preferences.recent.filter(s=>s.stationuuid!==state.station!.stationuuid)].slice(0,40)});}const key=JSON.stringify([state.station?.stationuuid,state.status,state.volume,state.error]);if(key!==previousPaintKey){previousPaintKey=key;updatePlayerUI();}else paintWave();});player.setVolume(preferences.volume);player.setVisualizing(true);app.addEventListener('click',onClick);render();void loadCountries();bridge.onCommand((command,value)=>{switch(command){case'window-visibility':nativeVisible=Boolean(value);globe?.setActive(nativeVisible&&!document.hidden);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.body.classList.toggle('window-hidden',!nativeVisible);if(nativeVisible)updatePlayerUI();break;case'preferences-changed':if(value&&typeof value==='object'){preferences={...preferences,...value as Partial<Preferences>};document.body.classList.toggle('reduced-motion',preferences.reducedMotion);globe?.setReducedMotion(preferences.reducedMotion);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.querySelectorAll('[data-action="widget"]').forEach(el=>el.classList.toggle('active',preferences.widgetEnabled));const check=document.querySelector<HTMLInputElement>('#widget-toggle');if(check)check.checked=preferences.widgetEnabled;document.querySelectorAll<HTMLInputElement>('input[name="widget-size"]').forEach(el=>el.checked=el.value===preferences.widgetSize);}break;case'toggle-play':case'toggle':void toggle();break;case'next':step(1);break;case'previous':step(-1);break;case'volume':player.setVolume(Number(value));void save({volume:Number(value)});break;case'favorite':favorite(current.station);break;case'show':bridge.windowAction('show');break;case'disable-widget':void changeWidget(false,preferences.widgetSize);break;}});document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeModal();return;}if(event.key==='Tab'&&(settingsOpen||countryDialogOpen||detailOpener)){const items=[...document.querySelectorAll<HTMLElement>('.modal button:not(:disabled),.modal input,.modal select')].filter(el=>el.getClientRects().length>0);const first=items[0],last=items[items.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}return;}if(settingsOpen||countryDialogOpen||detailOpener)return;if((event.target as HTMLElement).matches('input,select,textarea')||event.ctrlKey||event.metaKey||event.altKey)return;if(event.code==='Space'){event.preventDefault();void toggle();}if(event.key==='/'){event.preventDefault();if(view==='explore')openCountries();else document.querySelector<HTMLInputElement>('#station-search')?.focus();}});document.addEventListener('visibilitychange',()=>{globe?.setActive(nativeVisible&&!document.hidden);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.body.classList.toggle('window-hidden',!nativeVisible||document.hidden);if(nativeVisible&&!document.hidden)updatePlayerUI();});}
+async function start(){if(isWidget){renderWidget();return;}try{preferences={...preferences,...await bridge.getPreferences()};version=await bridge.version();}catch{toast('설정을 불러오지 못해 기본값으로 시작했어.');}document.body.classList.toggle('reduced-motion',preferences.reducedMotion);const {RadioPlayer}=await import('./audio');player=new RadioPlayer(bridge,state=>{current=state;if(state.status==='playing'&&state.station&&state.station.stationuuid!==lastRecent){lastRecent=state.station.stationuuid;void save({recent:[state.station,...preferences.recent.filter(s=>s.stationuuid!==state.station!.stationuuid)].slice(0,40)});}const key=JSON.stringify([state.station?.stationuuid,state.status,state.volume,state.error]);if(key!==previousPaintKey){previousPaintKey=key;if(recordPlaybackHealth(state))renderList();updatePlayerUI();}else paintWave();});player.setVolume(preferences.volume);player.setVisualizing(true);app.addEventListener('click',onClick);render();void loadCountries();bridge.onCommand((command,value)=>{switch(command){case'window-visibility':nativeVisible=Boolean(value);globe?.setActive(nativeVisible&&!document.hidden);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.body.classList.toggle('window-hidden',!nativeVisible);if(nativeVisible)updatePlayerUI();break;case'preferences-changed':if(value&&typeof value==='object'){preferences={...preferences,...value as Partial<Preferences>};document.body.classList.toggle('reduced-motion',preferences.reducedMotion);globe?.setReducedMotion(preferences.reducedMotion);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.querySelectorAll('[data-action="widget"]').forEach(el=>el.classList.toggle('active',preferences.widgetEnabled));const check=document.querySelector<HTMLInputElement>('#widget-toggle');if(check)check.checked=preferences.widgetEnabled;document.querySelectorAll<HTMLInputElement>('input[name="widget-size"]').forEach(el=>el.checked=el.value===preferences.widgetSize);}break;case'toggle-play':case'toggle':void toggle();break;case'next':step(1);break;case'previous':step(-1);break;case'volume':player.setVolume(Number(value));void save({volume:Number(value)});break;case'favorite':favorite(current.station);break;case'show':bridge.windowAction('show');break;case'disable-widget':void changeWidget(false,preferences.widgetSize);break;}});document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeModal();return;}if(event.key==='Tab'&&(settingsOpen||countryDialogOpen||detailOpener)){const items=[...document.querySelectorAll<HTMLElement>('.modal button:not(:disabled),.modal input,.modal select')].filter(el=>el.getClientRects().length>0);const first=items[0],last=items[items.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}return;}if(settingsOpen||countryDialogOpen||detailOpener)return;if((event.target as HTMLElement).matches('input,select,textarea')||event.ctrlKey||event.metaKey||event.altKey)return;if(event.code==='Space'){event.preventDefault();void toggle();}if(event.key==='/'){event.preventDefault();if(view==='explore')openCountries();else document.querySelector<HTMLInputElement>('#station-search')?.focus();}});document.addEventListener('visibilitychange',()=>{globe?.setActive(nativeVisible&&!document.hidden);player.setVisualizing((nativeVisible&&!document.hidden)||preferences.widgetEnabled);document.body.classList.toggle('window-hidden',!nativeVisible||document.hidden);if(nativeVisible&&!document.hidden)updatePlayerUI();});}
+if (!isWidget) mountChat();
 void start();

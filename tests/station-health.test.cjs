@@ -37,3 +37,24 @@ test('a new URL or positive check supersedes a dated failure even before its sev
     assert.equal(isAvailableStation(station, time + 8 * 86400000), true);
   } finally { delete failedStationAddresses[station.stationuuid]; }
 });
+
+test('catalog downranks the audited address and a successful local playback restores it', () => {
+  const fs = require('node:fs'), vm = require('node:vm'), ts = require('typescript');
+  const source = fs.readFileSync(require.resolve('../src/playback-health.ts'), 'utf8');
+  const script = ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const stored = new Map(), api = {}, time = Date.parse(checkedAt) + 1000;
+  vm.runInNewContext(script, {exports:api,require:() => require('../electron/station-health.mjs'),
+    Date:class extends Date { static now(){return time;} },localStorage:{
+      getItem:key=>stored.get(key),setItem:(key,value)=>stored.set(key,value)
+    }});
+  const gs='https://master.nhkworld.jp/nhkworld-radio/playlist/gs2/live.m3u8';
+  const nhk={stationuuid:'813c17ee-abc0-46ce-974f-6640a3909d3c',url:gs,url_resolved:gs};
+  const other={stationuuid:'other',url:'https://example.org/live'};
+  assert.match(api.playbackHealthLabel(nhk), /점검/);
+  assert.equal(api.prioritizePlayable([nhk,other])[0],other);
+  assert.ok(api.recordPlaybackHealth({station:nhk,status:'playing'}));
+  assert.equal(api.prioritizePlayable([nhk,other])[0],nhk);
+  assert.ok(api.recordPlaybackHealth({station:nhk,status:'error'}));
+  assert.equal(api.playbackHealthLabel(nhk),'최근 재생 실패');
+  assert.equal(api.playbackHealthLabel({...nhk,url:'https://example.org/updated'}),'');
+});

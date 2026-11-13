@@ -24,3 +24,15 @@ test('ICY reader refuses non-audio responses and unsupported encodings', async (
     try { await assert.rejects(readIcyResponse(socket)); } finally { socket.destroy(); }
   }
 });
+
+test('QuantumCast audio accepts a bare LF on the 200 status only and preserves bytes', async () => {
+  const read = headers => readIcyResponse(Readable.from([Buffer.from(headers + '\r\n\r\nbytes')]), {bareStatus:true});
+  const response = await read('HTTP/1.1 200 OK\nContent-Type:audio/mpeg\r\nServer: QuantumCast');
+  const bytes = [];
+  for await (const part of response) bytes.push(part);
+  assert.equal(Buffer.concat(bytes).toString(), 'bytes');
+  for (const bad of ['HTTP/1.1 200 OK\nContent-Type:text/html', 'HTTP/1.1 401 Unauthorized\nContent-Type:audio/mpeg',
+    'HTTP/1.1 200 OK\nContent-Type:audio/mpeg\nX-Other: value', 'HTTP/1.1 200 OK\nContent-Type:audio/mpeg\r\nTransfer-Encoding:chunked']) {
+    await assert.rejects(read(bad));
+  }
+});

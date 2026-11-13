@@ -54,10 +54,16 @@ function generate(dir, release) {
     }
     const map = Object.fromEntries(snapshot.filter(s => s.lastcheckok === 1 && byId.get(s.stationuuid)?.suppress)
       .map(s => [s.stationuuid, addressSignature(s)]).sort(([a],[b]) => a.localeCompare(b)));
+    const denied = Object.fromEntries(snapshot.filter(s => {
+      const review = byId.get(s.stationuuid);
+      return review && /^(?:playlist-)?http-(?:401|403|451)$/.test(review.retry) &&
+        review.retry === review.outcome && (!review.alternate || review.alternate === review.retry);
+    }).map(s => [s.stationuuid, addressSignature(s)]).sort(([a],[b]) => a.localeCompare(b)));
     fs.writeFileSync(path.join(__dirname, '../electron/station-health-results.mjs'),
       '// Dated, address-specific results from the v0.2.3 station audit.\n' +
       'export const checkedAt = ' + JSON.stringify(dates.at(-1)) + ';\n' +
-      'export const failedStationAddresses = ' + JSON.stringify(map, null, 2) + ';\n');
+      'export const failedStationAddresses = ' + JSON.stringify(map, null, 2) + ';\n' +
+      'export const deniedStationAddresses = ' + JSON.stringify(denied, null, 2) + ';\n');
   }
   const { cleanStation } = require('../electron/station-catalog.mjs');
   const locales = new Intl.DisplayNames(['ko'], {type:'region'});

@@ -2,6 +2,8 @@ node_modules/
 dist/
 release/
 artifacts/
+.wrangler/
+.dev.vars*
 *.log
 .env*
 assets/desktop-launcher.exe

@@ -34,7 +34,7 @@ async function createStreamProxy({ request = requestPublic } = {}) {
   const server=http.createServer(async(req,res)=>{
     res.setHeader('Access-Control-Allow-Origin','*');
     res.setHeader('Access-Control-Allow-Headers','Range');
-    res.setHeader('Access-Control-Expose-Headers','Content-Length,Content-Range,Accept-Ranges');
+    res.setHeader('Access-Control-Expose-Headers','Content-Length,Content-Range,Accept-Ranges,X-Allradione-Error');
     res.setHeader('Cross-Origin-Resource-Policy','cross-origin');
     res.setHeader('Cache-Control','no-store');
     const local=new URL(req.url,'http://127.0.0.1');
@@ -87,7 +87,18 @@ async function createStreamProxy({ request = requestPublic } = {}) {
         for(let next=await iterator.next();!next.done;next=await iterator.next())await write(next.value);
         res.end();
       }
-    }catch(e){if(!res.destroyed){if(!res.headersSent)res.writeHead(502);res.end('Unable to connect to broadcast');}}
+    } catch (error) {
+      if (!res.destroyed) {
+        if (!res.headersSent) {
+          let cause = 'connection';
+          if (/CERT|SSL|TLS|VERIFY_LEAF|SELF_SIGNED|ISSUER/.test(error.code || '')) cause = 'tls';
+          else if (['ENOTFOUND','EAI_AGAIN'].includes(error.code)) cause = 'dns';
+          else if (/timed out/i.test(error.message)) cause = 'timeout';
+          res.writeHead(502, {'X-Allradione-Error': cause});
+        }
+        res.end('Unable to connect to broadcast');
+      }
+    }
     finally{controllers.delete(controller);}
   });
   server.requestTimeout=0;server.headersTimeout=15000;

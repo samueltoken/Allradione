@@ -29,6 +29,7 @@
 
 - **Station operators.** Each country has tabs for confirmed broadcasters, independent stations, unconfirmed operators, and the full list. Station details include the operator, relay and source when available.
 - **Your stations.** Search the directory, save favorites, and return to recent listening.
+- **Global chat.** Open the red speech bubble on the main window to chat across countries. Choose a nickname or use the assigned Ano number.
 - **Sound in motion.** Visualizers respond to the actual audio signal and settle when playback is silent.
 - **A considered interface.** Sora, Pretendard, and IBM Plex Mono pair clear typography with an instrument-inspired layout.
 - **Everyday controls.** Volume, sleep timer, reduced motion, and in-app updates.
@@ -66,7 +67,9 @@ Open **Settings → Update** to download, verify, and install the latest stable 
 
 Allradione uses a local, token-protected audio proxy for playback and visualization. It does not relay streams to other listeners.
 
-No account, telemetry, or application server is required. Selecting a station submits its ID to Radio Browser's public click counter.
+Listening requires no account. Selecting a station submits its ID to Radio Browser's public click counter.
+
+Opening chat connects to Allradione’s Cloudflare service. The room shares the latest 80 messages from the past day. Other participants see your nickname and messages. Your listening station stays private. A local chat token restores your nickname on reconnect. Use a message’s menu to hide its author or report it.
 
 Station availability depends on the broadcaster, network, and region. Recording, rebroadcasting, and geographic or subscription bypass are not included. Desktop widgets may not appear above exclusive fullscreen games or Windows security screens.
 

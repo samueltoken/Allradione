@@ -20,6 +20,8 @@
 
 기관 기록은 방송사·방송국 이름, 근거 주소, 확인된 중계 서비스, 프로그램 출처를 구분해 보관합니다. 홈페이지에 적힌 방송사 이름, 장르, 인기 순위만으로 운영자를 확정하지 않습니다. 송출 주소와 출처가 확인된 기록은 국가 코드가 잘못되어 있어도 적용합니다.
 
+Radio Browser는 방송명, 홈페이지, 원래 주소, 접속 후 도착한 주소를 제공합니다. 공개 자료에는 운영 법인을 식별하는 항목이 없습니다. 방송사의 주소가 공동 송출 서버로 연결될 때 Allradione는 방송사가 실제로 제공한 채널 경로와 대조합니다. 방송사의 이름을 붙인 개인 중계나 같은 서버의 다른 채널에는 이 표시를 적용하지 않습니다. 오픈소스 iptv-org도 방송 채널의 소유자와 개별 송출 주소를 별도 자료로 관리합니다. [Radio Browser의 방송 자료 항목](https://docs.radio-browser.info/) · [iptv-org의 채널·송출 자료](https://github.com/iptv-org/api) · [방송별 확인 근거](network-operators.md)
+
 한국 방송사 자체 사이트, 유럽·아시아태평양·카리브 방송 연합의 회원 명단, 각 방송사의 서비스 사이트를 참고했습니다. 방송사 소유 도메인 및 개별 채널 주소는 앱에 포함한 목록으로 대조합니다. 독일 민영 방송은 주 미디어 당국이 공개한 FM·DAB 방송 목록 및 방송 그룹의 채널 자료도 사용합니다. [EBU](https://www.ebu.ch/about/members) · [ABU](https://www.abu.org.my/membership/) · [CBU](https://www.caribroadcastunion.org/membership/our-members/) · [독일 주 미디어 당국 목록](https://www.die-medienanstalten.de/fileadmin/user_upload/die_medienanstalten/Aufgaben/Vielfaltssicherung/Public_Value/Listungen_2025/Public-Value-Audio_Gebietslisten_V2.pdf) · [REGIOCAST](https://www.regiocast.de/uber-uns)
 
 Wikidata의 CC0 방송국 자료도 사용했습니다. 2026년 11월 13일 기준으로 방송국 및 그 하위 분류 가운데 주파수, 호출 부호 또는 미국 FCC 시설 번호가 있고 공식 웹사이트와 국가가 기록된 항목을 조회했습니다. 현재 목록의 송출 도메인이 한 방송국의 전용 웹사이트와 일치하거나 공개된 송출 주소가 정확히 일치하는 경우 방송국을 연결했습니다. 근거 링크는 각 방송국의 개별 Wikidata 항목입니다. [Wikidata 데이터 이용 안내](https://www.wikidata.org/wiki/Wikidata:Licensing) · [QLever Wikidata 조회 서비스](https://qlever.dev/wikidata)

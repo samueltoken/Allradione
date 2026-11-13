@@ -1,4 +1,5 @@
 'use strict';
+const {url:chatRoom}=require('./chat-endpoint.json');
 
 function sameDocument(raw, expected) {
  try { const actual=new URL(raw), trusted=new URL(expected);return actual.protocol===trusted.protocol&&actual.host===trusted.host&&actual.pathname===trusted.pathname&&!actual.username&&!actual.password; }
@@ -13,6 +14,7 @@ function isAllowedRendererRequest(raw,proxyEndpoint,devOrigin) {
   const url=new URL(raw), proxy=new URL(proxyEndpoint);
   if(!['http:','https:','ws:','wss:'].includes(url.protocol))return true;
   if(url.username||url.password)return false;
+  if(url.href===chatRoom)return true;
   if(url.origin===proxy.origin&&url.pathname===proxy.pathname&&url.protocol==='http:')return true;
   if(devOrigin){const dev=new URL(devOrigin);if(url.host===dev.host&&((url.protocol===dev.protocol)||(dev.protocol==='http:'&&url.protocol==='ws:')))return true;}
   // Native renderers have no need to contact radios, image hosts, APIs or other

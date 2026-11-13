@@ -1,0 +1,8 @@
+{
+  "name": "allradione-chat",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "4.161.0"
+  }
+}

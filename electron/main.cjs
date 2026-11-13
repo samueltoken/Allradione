@@ -4,7 +4,7 @@ const path=require('node:path');
 const fs=require('node:fs/promises');
 const {pathToFileURL}=require('node:url');
 const {createStreamProxy}=require('./stream-proxy.cjs');
-const {resolveKoreanStream}=require('./korean-stations.mjs');
+const {resolveStationStream}=require('./nhk-radio.mjs');
 const {fetchText}=require('./network.cjs');
 const {createPreferences}=require('./preferences.cjs');
 const {createRadio,cleanStation}=require('./radio.cjs');
@@ -92,7 +92,7 @@ function broadcastPreferences(){const current=preferences.get();for(const win of
 function broadcastState(){if(widgetWindow&&!widgetWindow.isDestroyed())widgetWindow.webContents.send('player:state',player);}
 function sanitizeState(value){
  if(!value||typeof value!=='object')return null;
- const statuses=['idle','connecting','playing','paused','error'];
+ const statuses=['idle','connecting','playing','paused','error','offair'];
  return {station:cleanStation(value.station),playing:Boolean(value.playing),status:statuses.includes(value.status)?value.status:'idle',volume:Math.min(1,Math.max(0,Number(value.volume)||0)),error:typeof value.error==='string'?value.error.slice(0,400):undefined,spectrum:Array.isArray(value.spectrum)?value.spectrum.slice(0,96).map(x=>Math.min(255,Math.max(0,Number(x)||0))):undefined};
 }
 async function start(){
@@ -116,7 +116,12 @@ async function start(){
  handle('preferences:save',async(_e,patch)=>{const saved=await preferences.save(patch);broadcastPreferences();return saved;});
  handle('radio:countries',()=>radio.countries());
  handle('radio:stations',(_e,code)=>radio.stations(String(code)));
- handle('radio:stream',async(_e,url)=>proxy.url(await resolveKoreanStream(url, endpoint=>fetchText(endpoint,{maxBytes:128*1024}))));
+ handle('radio:stream',async(_e,url)=>{
+  const source=await resolveStationStream(url, endpoint=>fetchText(endpoint,{maxBytes:256*1024}));
+  if(typeof source==='string')return proxy.url(source);
+  if(source.offAir)return source;
+  return {...source,url:proxy.url(source.url),backup:source.backup?proxy.url(source.backup):undefined};
+ });
  handle('radio:click',(_e,id)=>radio.click(id));
  handle('widget:set',(_e,enabled,size)=>setWidget(Boolean(enabled),size==='medium'?'medium':'small'));
  handle('app:version',()=>app.getVersion());

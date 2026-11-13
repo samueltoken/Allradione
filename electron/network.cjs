@@ -48,9 +48,11 @@ async function requestPublic(raw, {headers={}, redirects=6, timeout=15000, signa
     const timer=setTimeout(()=>req.destroy(new Error('Connection timed out')),timeout);
     req.on('error',e=>{
       clearTimeout(timer);
-      if(allowIcy && !signal?.aborted && e.code==='HPE_INVALID_CONSTANT' &&
-          e.rawPacket?.subarray(0,12).toString('latin1')==='ICY 200 OK\r\n'){
-        requestIcy(url,address,{signal,timeout,userAgent:'Allradione/'+APP_VERSION}).then(resolve,reject);
+      const prefix=e.rawPacket?.subarray(0,16).toString('latin1') || '';
+      const bareStatus=e.code==='HPE_CR_EXPECTED' && /^HTTP\/1\.[01] 200 OK\n/.test(prefix);
+      const icy=e.code==='HPE_INVALID_CONSTANT' && prefix.startsWith('ICY 200 OK\r\n');
+      if(allowIcy && !signal?.aborted && (icy || bareStatus)){
+        requestIcy(url,address,{signal,timeout,userAgent:'Allradione/'+APP_VERSION,bareStatus}).then(resolve,reject);
       }else reject(e);
     });
     req.setTimeout(45000,()=>req.destroy(new Error('Stream connection timed out')));

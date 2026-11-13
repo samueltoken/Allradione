@@ -8,3 +8,4 @@ type PlaybackEntry = {
 export function addressSignature(station: PlaybackEntry): string;
 export function isPlaybackAddress(value: unknown): boolean;
 export function isAvailableStation(station: PlaybackEntry, now?: number): boolean;
+export function wasDeniedInAudit(station: PlaybackEntry, now?: number): boolean;

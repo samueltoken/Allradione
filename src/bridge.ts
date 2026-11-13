@@ -1,6 +1,6 @@
 import type { AllradioneBridge, Country, PlayerState, Preferences, Station, UpdateInfo } from './types';
 import { version as currentVersion } from '../package.json';
-import { resolveKoreanStream } from '../electron/korean-stations.mjs';
+import { resolveStationStream } from '../electron/nhk-radio.mjs';
 import { countriesFromRows, createStationReader, savedStations } from '../electron/station-catalog.mjs';
 const defaults:Preferences={volume:.65,favorites:[],recent:[],widgetEnabled:false,widgetSize:'small',lastCountry:'',reducedMotion:false};
 const channels = new BroadcastChannel('allradione-preview');
@@ -24,7 +24,7 @@ export const bridge:AllradioneBridge = window.allradione || {
  stations:readStations,
  async streamUrl(url){
    if(!/^https?:\/\//i.test(url))throw new Error('지원하지 않는 방송 주소입니다.');
-   return resolveKoreanStream(url,async endpoint=>{
+   return resolveStationStream(url,async endpoint=>{
      const response=await fetch(endpoint,{signal:AbortSignal.timeout(12000)});
      if(!response.ok)throw new Error('방송사에 연결할 수 없습니다.');
      return response.text();
