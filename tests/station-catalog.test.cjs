@@ -29,6 +29,10 @@ test('corrects North Korean programme origins without assigning foreign-language
   assert.equal(s.operatorName, 'intchoson');
   assert.equal(s.programmeOriginName, '조선중앙방송');
   assert.equal(cleanStation(foreign).countrycode, 'US');
+  assert.equal(cleanStation(row({url:'https://stream.zeno.fm/oldwnjuma3duv', countrycode:'KP'})).countrycode,'EE');
+  const reused = cleanStation(row({name:'Голос Корей',url:'https://listen4.myradio24.com/60315',countrycode:'KP'}));
+  assert.equal(reused.countrycode,'ZZ');
+  assert.equal(reused.name,'EURORADIO');
   const read = createStationReader(async endpoint => endpoint.startsWith('stations/bycountrycodeexact/KR?') ? [relay] : []);
   assert.equal((await read('KP'))[0].stationuuid, relay.stationuuid);
   assert.ok(!(await read('KR')).some(item => item.stationuuid === relay.stationuuid));

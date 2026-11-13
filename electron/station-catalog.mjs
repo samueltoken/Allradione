@@ -29,6 +29,7 @@ export function cleanStation(raw) {
     if (canonical) station = { ...canonical };
   }
   const origin = streamOrigin(station);
+  if (origin.name) station.name = origin.name;
   station.countrycode = origin.country || countryCode(raw.countrycode);
   station.operatorKind = origin.kind || 'unknown';
   for (const key of ['operatorName','operatorSource','relayName','programmeOriginName']) {

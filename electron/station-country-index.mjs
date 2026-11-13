@@ -1,6 +1,8 @@
 // Directory entries whose source country differs from their published record.
 // Re-fetch by UUID and recheck the stream identity on every lookup.
 export const incomingStations = {
+  "EE": ["0a83de69-837b-4a24-8e59-dbe87dc75c9f"],
+  "ZZ": ["238f1b0e-758a-4ee8-bbe2-7fe81bf3c43e"],
   "BE": [
     "29bf5c13-7cc4-11e9-aa30-52543be04c81",
     "b36c0565-2012-405c-960f-b88ede4b8dae"

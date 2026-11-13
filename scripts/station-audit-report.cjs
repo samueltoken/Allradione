@@ -67,7 +67,7 @@ function generate(dir, release) {
     resolvedMissingCountry: 0, namedOperators: 0, namedRelays: 0, namedProgrammeOrigins: 0, operatorSources: 0, alternateRecoveries };
   const rows = [['방송 ID','방송명','목록 원본 국가코드','앱 국가코드','앱 운영자 구분','팟캐스트 표시','목록 제공처 점검','목록 제공처 점검시각(UTC)',
     '직접 점검 결과','첫 접속','재접속','등록 원본 주소 접속','최근 직접 점검시각(UTC)','현재 주소 일시 제외 근거',
-    '확인한 운영자','재송출 운영자','프로그램 원 제작처','운영자 확인 출처(도메인)']];
+    '확인한 운영자','재송출 운영자','프로그램 원 제작처','운영자 확인 출처(도메인)','목록 원본 방송명']];
   for (const station of snapshot) {
     const entry = checked.get(station.stationuuid);
     const review = byId.get(station.stationuuid);
@@ -85,10 +85,10 @@ function generate(dir, release) {
     else if (secondOk) bucket = 'recovered';
     else bucket = 'failed';
     const label = {primary:'송출 데이터 확인', recovered:'재점검에서 송출 데이터 확인', failed:'송출 데이터 미확인', skipped:'직접 점검 제외', pending:'직접 점검 대기'}[bucket];
-    rows.push([station.stationuuid,station.name,station.countrycode,code,operatorLabels[kind],clean?.isPodcast ? '예' : '',
+    rows.push([station.stationuuid,clean?.name || station.name,station.countrycode,code,operatorLabels[kind],clean?.isPodcast ? '예' : '',
       dirOk ? '정상' : '실패',station.lastchecktime_iso8601,label,describe(firstResult),describe(review?.retry),describe(review?.alternate),
       review?.checkedAt || entry?.time,suppressed ? '웹페이지 또는 HTTP 404/410 반복 응답' : '',
-      clean?.operatorName,clean?.relayName,clean?.programmeOriginName,sourceDomain(clean)]);
+      clean?.operatorName,clean?.relayName,clean?.programmeOriginName,sourceDomain(clean),station.name]);
     if (!countries.has(code)) countries.set(code, {rows:0, directoryGood:0, primary:0, recovered:0, failed:0, skipped:0, pending:0, suppressed:0, broadcaster:0, independent:0, unknown:0});
     const counts = countries.get(code);
     for (const object of [totals, counts]) {
@@ -142,6 +142,7 @@ function generate(dir, release) {
     '운영자 구분은 방송사 ' + number(totals.broadcaster) + '건, 개인·독립 방송 ' + number(totals.independent) + '건, 운영자 미확인 ' + number(totals.unknown) + '건입니다. 운영자 이름을 확인한 항목은 ' + number(totals.namedOperators) + '건입니다.',
     '목록 제공처가 정상으로 표시했지만 재접속 때도 웹페이지나 HTTP 404/410으로 응답한 항목 중 일시 제외 근거가 있는 방송 ' + number(totals.suppressed) + '건.',
     '', '파일 설명', '방송별-점검.csv에는 목록 원본 분류와 앱의 방송 국가 및 운영자 분류를 함께 적었습니다. 공식 편성 채널과 별도로 앱에서 직접 추가한 한국 방송사의 채널은 원본 목록의 집계에 포함하지 않았습니다.',
+    '방송명은 앱이 표시하는 이름입니다. 등록 당시 이름이 달랐던 방송은 마지막 열의 목록 원본 방송명에서 찾을 수 있습니다.',
     '국가별-요약.csv는 앱 기준의 국가코드로 방송별 결과를 합산했습니다. 국가 미상 항목은 별도 행에 있습니다.',
     '확인한 운영자, 재송출 운영자, 프로그램 원 제작처는 앱에서 확인한 사실만 적었습니다. 근거가 없는 항목은 비어 있습니다. 출처는 확인에 사용한 공개 자료의 도메인입니다.',
     '한국-방송사-직결.csv는 앱에 직접 추가한 국내 방송사 채널 ' + official.length + '개의 별도 점검표입니다. 방송사의 현재 재생 주소를 받아 ' + official.filter(s => s.outcome === 'media').length + '개 채널에서 송출 데이터를 확인했습니다.',

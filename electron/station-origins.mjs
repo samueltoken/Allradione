@@ -101,6 +101,16 @@ export function streamOrigin(station) {
   if (directRecord) return recordEvidence(directRecord);
   let host = url.hostname.toLowerCase().replace(/\.$/, '');
   const path = url.pathname;
+  if (host === 'stream.zeno.fm' && path === '/oldwnjuma3duv') {
+    return { country: 'EE', kind: 'independent', operatorName: 'Voice of Chongro', relayName: 'Zeno.FM',
+      operatorSource: 'https://zeno.fm/radio/voice-of-chongro/' };
+  }
+  if (host === 'listen4.myradio24.com' && path === '/60315') {
+    // This reused stream ID now publishes a music station. Its current page
+    // does not identify a country or a person responsible for the station.
+    return { country: 'ZZ', name: 'EURORADIO', programmeOriginName: 'EURORADIO', relayName: 'MyRadio24',
+      operatorSource: 'https://myradio24.com/60315' };
+  }
   if (host === 'jtvonair.sbsoft.net' && path === '/jtv_radio/myStream/playlist.m3u8') {
     return { country: 'KR', kind: 'broadcaster', operatorName: 'JTV 전주방송', operatorSource: 'https://www.jtv.co.kr/page/00029.php' };
   }
