@@ -699,6 +699,7 @@ async function main() {
       assert.equal(preferences.backgroundPlayback, false, 'Upgrade retains the choice to quit on window close');
       assert.equal(preferences.reducedMotion, true, 'Upgrade must preserve settings');
       assert.deepEqual(preferences.favorites.map(station => station.stationuuid), [sentinel.stationuuid], 'Upgrade must preserve favorites');
+      assert.equal(preferences.recent[0]?.stationuuid, sentinel.stationuuid, 'Upgrade must preserve the station played while Setup was open');
       assert.equal(await fs.readFile(path.join(userData, MARKER), 'utf8'), APP_ID, 'Upgrade must preserve the owned profile');
       assert.equal(JSON.parse(await fs.readFile(path.join(userData, 'code-cache-version.json'), 'utf8')).version, packageJson.version, 'New version must complete its code-cache transition');
       assert.equal(await exists(oldStage), false, 'Startup must clean expired, positively owned update staging');
@@ -708,7 +709,9 @@ async function main() {
     results.push({ check: 'retained release automatic upgrade preserves settings and launcher and removes obsolete owned files', mode: 'automatic-update', fromVersion: BASELINE_VERSION, toVersion: packageJson.version, crossVersionUpdateTested: BASELINE_VERSION !== packageJson.version, passed: true });
 
     await withInstalledApp(executable, async (_application, page) => {
-      await page.evaluate(() => window.allradione.savePreferences({ backgroundPlayback: true }));
+      // The widget command test starts with an idle player and publishes its own sample station.
+      // Remove the upgrade test's listening history after checking it survived the update.
+      await page.evaluate(() => window.allradione.savePreferences({ backgroundPlayback: true, recent: [] }));
     });
     await runProcess(process.execPath, [path.join(ROOT, 'scripts', 'smoke-electron.cjs')], { timeout: 480000, inherit: true, env: { ...process.env, ALLRADIONE_SMOKE_EXECUTABLE: executable, ALLRADIONE_SMOKE_INSTALLED: '1' } });
     results.push({ check: 'full native smoke against the installed executable and genuine installed profile', passed: true });
