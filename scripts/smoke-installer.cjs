@@ -592,7 +592,7 @@ async function main() {
   let failure;
   const sentinel = { stationuuid: '00000000-0000-4000-8000-000000000099', name: 'Installer upgrade preservation fixture', url: 'https://example.com/no-audio', url_resolved: 'https://example.com/no-audio', homepage: '', favicon: '', countrycode: 'JP', language: '', tags: '', codec: 'MP3', bitrate: 128, hls: 0, lastcheckok: 1, votes: 0 };
   const legacyStation = { ...sentinel, stationuuid: '00000000-0000-4000-8000-000000000098', name: 'Portable migration fixture' };
-  const legacyPreferences = JSON.stringify({ volume: 0.61, favorites: [legacyStation], widgetEnabled: false, widgetSize: 'small', lastCountry: 'JP', reducedMotion: false });
+  const legacyPreferences = JSON.stringify({ volume: 0.61, favorites: [legacyStation], widgetEnabled: false, backgroundPlayback: false, widgetSize: 'small', lastCountry: 'JP', reducedMotion: false });
 
   const uninstall = async () => {
     const original = path.join(installDirectory, 'Uninstall Allradione.exe');
@@ -637,6 +637,7 @@ async function main() {
       assert.equal(await fs.readFile(path.join(actualData, MARKER), 'utf8'), APP_ID, 'App must create the exact ownership marker');
       assert.equal(await page.evaluate(() => window.allradione.version()), packageJson.version, 'Fresh installed app must report the new version');
       const migrated = await page.evaluate(() => window.allradione.getPreferences());
+      assert.equal(migrated.backgroundPlayback, false, 'The test listener chose to quit on window close');
       assert.equal(migrated.volume, 0.61, 'Fresh installation must migrate the adjacent portable preferences');
       assert.deepEqual(migrated.favorites.map(station => station.stationuuid), [legacyStation.stationuuid], 'Fresh installation must migrate portable favorites');
     });
@@ -672,6 +673,12 @@ async function main() {
       await page.evaluate(station => window.allradione.savePreferences({ volume: 0.31, favorites: [station], widgetEnabled: false, widgetSize: 'medium', reducedMotion: true }), sentinel);
       return application.process().pid;
     });
+    // 0.2.4 predates the background preference. Seed the listener's choice
+    // in the disposable profile while that app is fully closed. The old
+    // downloader does not save settings, so the new installation inherits it.
+    const savedSettings = JSON.parse(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'));
+    savedSettings.backgroundPlayback = false;
+    await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify(savedSettings));
     const beforeUpgrade = await windowsSnapshot();
     await assertShortcutTarget(beforeUpgrade, menuShortcut, executable, 'Baseline Start menu shortcut must target the actual installed app');
     const releasedUpdater = await readReleasedUpdater(installDirectory);
@@ -699,6 +706,7 @@ async function main() {
       assert.equal(await page.evaluate(() => window.allradione.version()), packageJson.version, 'Upgraded app must report the new version');
       const preferences = await page.evaluate(() => window.allradione.getPreferences());
       assert.equal(preferences.volume, 0.31, 'Upgrade must preserve volume');
+      assert.equal(preferences.backgroundPlayback, false, 'Upgrade retains the choice to quit on window close');
       assert.equal(preferences.reducedMotion, true, 'Upgrade must preserve settings');
       assert.deepEqual(preferences.favorites.map(station => station.stationuuid), [sentinel.stationuuid], 'Upgrade must preserve favorites');
       assert.equal(await fs.readFile(path.join(userData, MARKER), 'utf8'), APP_ID, 'Upgrade must preserve the owned profile');
@@ -709,6 +717,9 @@ async function main() {
     });
     results.push({ check: 'retained release automatic upgrade preserves settings and launcher and removes obsolete owned files', mode: 'automatic-update', fromVersion: BASELINE_VERSION, toVersion: packageJson.version, crossVersionUpdateTested: BASELINE_VERSION !== packageJson.version, passed: true });
 
+    await withInstalledApp(executable, async (_application, page) => {
+      await page.evaluate(() => window.allradione.savePreferences({ backgroundPlayback: true }));
+    });
     await runProcess(process.execPath, [path.join(ROOT, 'scripts', 'smoke-electron.cjs')], { timeout: 480000, inherit: true, env: { ...process.env, ALLRADIONE_SMOKE_EXECUTABLE: executable, ALLRADIONE_SMOKE_INSTALLED: '1' } });
     results.push({ check: 'full native smoke against the installed executable and genuine installed profile', passed: true });
     await fs.symlink(unrelatedDirectory, path.join(userData, 'smoke-external-junction'), 'junction');
