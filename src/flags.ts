@@ -1,5 +1,5 @@
 // All country flags are bundled assets, including on Windows without emoji flags.
-const sources = import.meta.glob<string>('/node_modules/flag-icons/flags/4x3/*.svg', {
+const sources = import.meta.glob<string>('../node_modules/flag-icons/flags/4x3/*.svg', {
   eager: true, query: '?url&no-inline', import: 'default',
 });
 const flags = new Map(Object.entries(sources).map(([path, url]) => [path.split('/').pop()!.slice(0, -4), url]));
