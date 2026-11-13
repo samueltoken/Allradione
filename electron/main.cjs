@@ -142,9 +142,10 @@ async function start(){
  });
  handle('radio:click',(_e,id)=>radio.click(id));
  handle('widget:set',(_e,enabled,size)=>setWidget(Boolean(enabled),size==='medium'?'medium':'small'));
- handle('widget:resize',async(event,width,save)=>{
+ handle('widget:resize',async(event,width,save,relative)=>{
   if(event.sender!==widgetWindow?.webContents||!Number.isFinite(width))return;
-  const kind=currentWidgetKind,size=widgetDimensions(kind,width);
+  const target=relative===true ? widgetWindow.getBounds().width+width : width;
+  const kind=currentWidgetKind,size=widgetDimensions(kind,target);
   widgetWindow.setBounds(anchoredWidget(widgetWorkArea(),size),false);
   if(save===true)await preferences.save({widgetWidths:{[kind]:size.width}});
  });

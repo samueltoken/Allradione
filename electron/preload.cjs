@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('allradione',{
  streamUrl:url=>ipcRenderer.invoke('radio:stream',url),
  stationClick:id=>ipcRenderer.invoke('radio:click',id),
  setWidget:(enabled,size)=>ipcRenderer.invoke('widget:set',enabled,size),
- resizeWidget:(width,save)=>ipcRenderer.invoke('widget:resize',width,save),
+ resizeWidget:(width,save,relative)=>ipcRenderer.invoke('widget:resize',width,save,relative===true),
  publishPlayer:state=>ipcRenderer.send('player:publish',state),
  onPlayer:fn=>{let active=true;const off=subscribe('player:state',(_event,state)=>{if(active)fn(state);});ipcRenderer.invoke('player:get').then(state=>{if(active)fn(state);}).catch(()=>{});return()=>{active=false;off();};},
  sendCommand:(command,value)=>ipcRenderer.send('player:command',command,value),

@@ -22,13 +22,16 @@ export function mountWidgetResize(container: HTMLElement, kind: 'small'|'medium'
     next = widthAt(event);
     if (!frame) frame = requestAnimationFrame(() => { frame = 0; void bridge.resizeWidget(next,false); });
   };
-  grip.onlostpointercapture = () => {
+  function finishDrag() {
     if (pointer === null) return;
     pointer = null; cancelAnimationFrame(frame); frame = 0; void bridge.resizeWidget(next,true);
-  };
+  }
+  grip.onpointerup = event => { if (pointer === event.pointerId) finishDrag(); };
+  grip.onpointercancel = finishDrag;
+  grip.onlostpointercapture = finishDrag;
   grip.onkeydown = event => {
     const grow = event.key === 'ArrowLeft' || event.key === 'ArrowUp';
     if (!grow && event.key !== 'ArrowRight' && event.key !== 'ArrowDown') return;
-    event.preventDefault(); void bridge.resizeWidget(window.innerWidth+(grow?8:-8),true);
+    event.preventDefault(); void bridge.resizeWidget(grow?8:-8,true,true);
   };
 }

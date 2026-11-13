@@ -13,7 +13,7 @@ export interface AllradioneBridge {
  countries():Promise<Country[]>; stations(code:string):Promise<Station[]>;
  streamUrl(url:string):Promise<StreamSource>; stationClick(id:string):Promise<void>;
  setWidget(enabled:boolean,size:WidgetSize):Promise<void>;
- resizeWidget(width:number,save:boolean):Promise<void>;
+ resizeWidget(width:number,save:boolean,relative?:boolean):Promise<void>;
  publishPlayer(state:PlayerState):void; onPlayer(fn:(state:PlayerState)=>void):()=>void;
  sendCommand(command:string,value?:unknown):void; onCommand(fn:(command:string,value?:unknown)=>void):()=>void;
  windowAction(action:'minimize'|'maximize'|'close'|'show'):void;

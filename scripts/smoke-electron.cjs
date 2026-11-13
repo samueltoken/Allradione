@@ -529,16 +529,27 @@ async function assertWidgetState(widget) {
 
 async function checkWidgetResize(page, kind, minimum, maximum) {
   const handle=page.locator('.widget-resize');
+  async function checkPaint(width,height) {
+    await expect.poll(()=>page.evaluate(([w,h])=>Math.max(Math.abs(innerWidth-w),Math.abs(innerHeight-h)),[width,height])).toBeLessThanOrEqual(2);
+    await expect.poll(()=>handle.evaluate(el=>{
+      const rect=el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
+    })).toBe(true);
+  }
+  await checkPaint(...maximum);
   const grip=await handle.boundingBox();
   await page.mouse.move(grip.x+grip.width/2,grip.y+grip.height/2);
   await page.mouse.down(); await page.mouse.move(grip.x+grip.width/2+14,grip.y+grip.height/2+4); await page.mouse.up();
   await expect.poll(async()=>(await nativeWindow(kind)).bounds.width).toBeLessThan(maximum[0]-5);
+  await expect.poll(()=>page.evaluate(async kind=>(await window.allradione.getPreferences()).widgetWidths?.[kind],kind)).toBeLessThan(maximum[0]-5);
   await page.evaluate(w=>window.allradione.resizeWidget(w,true),maximum[0]);
   await assertWidget(kind,...maximum);
   await handle.focus(); await handle.press('ArrowRight');
   await expect.poll(async()=>Math.abs((await nativeWindow(kind)).bounds.width - (maximum[0]-8))).toBeLessThanOrEqual(2);
+  await checkPaint(maximum[0]-8,maximum[1]-(kind==='small'?8:4));
   await page.evaluate(()=>window.allradione.resizeWidget(1,true));
   await assertWidget(kind,...minimum);
+  await checkPaint(...minimum);
   for(const selector of ['#widget-play','[data-widget-name]','[data-widget-action="show"]','[data-widget-action="close"]']){
     const fits=await page.locator(selector).evaluate(el=>{
       const r=el.getBoundingClientRect();
